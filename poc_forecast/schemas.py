@@ -19,6 +19,18 @@ class UserStats:
 
 
 @dataclass
+class DistFitResult:
+    mu: float           # log-scale mean
+    sigma: float        # log-scale std
+    ks_stat: float      # KS 통계량
+    ks_pvalue: float    # p-value: >0.05 → 로그정규 가설 기각 못함 (적합 양호)
+    fit_quality: str    # "good" / "marginal" / "poor"
+    p50_dist: float     # 분포 기반 P50 (경험적 값 대체에 사용)
+    p75_dist: float
+    p95_dist: float
+
+
+@dataclass
 class SegmentStats:
     name: str          # "Heavy", "Medium", "Light"
     user_count: int
@@ -30,6 +42,7 @@ class SegmentStats:
     monthly_credit_per_user_p50: float
     monthly_credit_per_user_p75: float
     monthly_credit_per_user_p95: float
+    credit_share_pct: float = 0.0  # 전체 크레딧 중 이 세그먼트 비율
 
 
 @dataclass
@@ -42,9 +55,13 @@ class ScenarioResult:
     monthly_p50: float
     monthly_p75: float
     monthly_p95: float
-    # 95% CI for P50 monthly
-    ci_lower: float
-    ci_upper: float
+    # 95% CI for each percentile
+    ci_p50_lower: float
+    ci_p50_upper: float
+    ci_p75_lower: float
+    ci_p75_upper: float
+    ci_p95_lower: float
+    ci_p95_upper: float
     # Annual estimates (with ramp-up)
     annual_p50: float
     annual_p75: float
@@ -53,6 +70,8 @@ class ScenarioResult:
     annual_steady_p50: float
     annual_steady_p75: float
     annual_steady_p95: float
+    # Which percentile source was used
+    used_dist_fit: bool = False
 
 
 @dataclass
@@ -65,8 +84,12 @@ class ForecastReport:
     bias_factor: float
     total_poc_credit: float
     credit_to_usd: float
+    working_day_ratio: float        # 실제 활동일 / 전체 기간 (근무일 보정용)
+    monthly_per_user: list          # 사용자별 월 크레딧 (차트용 원본 데이터)
+    dist_fit: DistFitResult         # 분포 적합 결과
     usage_type_summary: dict
     usage_unit_summary: dict
     segment_stats: list
     scenarios: list
+    sensitivity: list = field(default_factory=list)
     warnings: list = field(default_factory=list)

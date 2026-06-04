@@ -32,6 +32,12 @@ def main():
                         help="HTML 리포트 저장 경로 (차트 6개 포함 단일 파일)")
     parser.add_argument("--no-ramp", action="store_true")
     parser.add_argument("--bootstrap-iterations", type=int, default=2000, metavar="N")
+    parser.add_argument("--monte-carlo", action="store_true",
+                        help="bias_factor·채택률 불확실성을 Monte Carlo로 추가 반영 (CI 확대)")
+    parser.add_argument("--mc-bias-sigma", type=float, default=0.40, metavar="S",
+                        help="bias_factor 불확실성 로그 스케일 sigma (기본 0.40 ≈ 90%% 범위 1.4x~4.5x)")
+    parser.add_argument("--mc-iterations", type=int, default=5000, metavar="N",
+                        help="Monte Carlo 반복 횟수 (기본 5000)")
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -93,6 +99,16 @@ def main():
         scenarios=scenario_keys,
         apply_ramp=not args.no_ramp,
     )
+
+    if args.monte_carlo:
+        scenarios = scaling.monte_carlo_ci(
+            scenarios,
+            population_percentiles=pop_pct,
+            enterprise_users=args.enterprise_users,
+            bias_factor=args.bias_factor,
+            bias_sigma=args.mc_bias_sigma,
+            n_sim=args.mc_iterations,
+        )
 
     sensitivity = scaling.bias_sensitivity_table(
         population_percentiles=pop_pct,

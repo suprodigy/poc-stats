@@ -453,16 +453,26 @@ def generate(report: ForecastReport, path: str):
 </table>"""
 
     # --- 비용 예측 표 ---
+    has_mc = any(s.mc_ci_p50_lower is not None for s in report.scenarios)
+
+    def _ci_cell_html(pval, mc_lo, mc_hi, boot_lo, boot_hi):
+        if mc_lo is not None:
+            return (f"{_fmt(pval, usd)}<br>{_ci_span(mc_lo, mc_hi, usd)}"
+                    f"<br><span style='font-size:10px;color:#aaa'>Monte Carlo</span>")
+        return (f"{_fmt(pval, usd)}<br>{_ci_span(boot_lo, boot_hi, usd)}"
+                f"<br><span style='font-size:10px;color:#aaa'>Bootstrap</span>")
+
     forecast_rows = "".join(f"""
 <tr>
   <td>{s.name} ({s.adoption_rate:.0%})<br><small>{s.active_users:,}명 활성</small></td>
-  <td>{_fmt(s.monthly_p50, usd)}<br>{_ci_span(s.ci_p50_lower, s.ci_p50_upper, usd)}</td>
-  <td>{_fmt(s.monthly_p75, usd)}<br>{_ci_span(s.ci_p75_lower, s.ci_p75_upper, usd)}</td>
-  <td>{_fmt(s.monthly_p95, usd)}<br>{_ci_span(s.ci_p95_lower, s.ci_p95_upper, usd)}</td>
+  <td>{_ci_cell_html(s.monthly_p50, s.mc_ci_p50_lower, s.mc_ci_p50_upper, s.ci_p50_lower, s.ci_p50_upper)}</td>
+  <td>{_ci_cell_html(s.monthly_p75, s.mc_ci_p75_lower, s.mc_ci_p75_upper, s.ci_p75_lower, s.ci_p75_upper)}</td>
+  <td>{_ci_cell_html(s.monthly_p95, s.mc_ci_p95_lower, s.mc_ci_p95_upper, s.ci_p95_lower, s.ci_p95_upper)}</td>
   <td>{_fmt(s.annual_p50, usd)}</td>
   <td>{_fmt(s.annual_p75, usd)}</td>
 </tr>""" for s in report.scenarios)
 
+    ci_label = "Monte Carlo 95% CI (bias·채택률 불확실성 포함)" if has_mc else "Bootstrap 95% CI (표본 추정 오차)"
     forecast_table = f"""
 <table>
 <tr><th>시나리오</th>
@@ -473,7 +483,7 @@ def generate(report: ForecastReport, path: str):
     <th>연간 P75<br><small>(램프업포함)</small></th></tr>
 {forecast_rows}
 </table>
-<p style="font-size:11px;color:#7f8c8d;margin-top:6px">단위: {unit} · CI = 95% 부트스트랩 신뢰구간</p>"""
+<p style="font-size:11px;color:#7f8c8d;margin-top:6px">단위: {unit} · CI = {ci_label}</p>"""
 
     # --- 민감도 표 ---
     sens_rows = "".join(f"""
@@ -708,6 +718,16 @@ def generate(report: ForecastReport, path: str):
       </div>
     </div>
     {sens_table}
+    {"" if not has_mc else _plain("<b>Monte Carlo CI</b>가 활성화되어 있습니다. 위 예측 표의 신뢰구간은 Bootstrap CI(표본 추정 오차만 반영)가 아닌 <b>Monte Carlo CI</b>입니다. — bias_factor와 채택률의 불확실성까지 더해 더 넓고 솔직한 범위를 보여줍니다.")}
+    {_toggle("Bootstrap CI vs Monte Carlo CI — 무엇이 다른가요?",
+        "<p><strong>Bootstrap CI</strong>는 '표본 100명에서 P50/P75/P95를 추정할 때 생기는 오차'만 반영합니다. "
+        "즉, bias_factor=2.5가 정확하다고 가정하고 사용자 샘플링 오차만 측정합니다.</p>"
+        "<p><strong>Monte Carlo CI</strong>는 여기에 두 가지 불확실성을 추가합니다:<br>"
+        "① <b>bias_factor</b>: 2.5x가 맞는지 확실하지 않으므로 LogNormal 분포로 모델링 (중앙값 2.5, 90% 범위 ≈ 1.4x~4.5x)<br>"
+        "② <b>채택률</b>: 45%가 맞는지 확실하지 않으므로 Beta 분포로 모델링 (중앙 45%, 범위 10~80%)</p>"
+        "<p>결과적으로 Monte Carlo CI는 Bootstrap CI보다 훨씬 넓습니다. "
+        "이것이 '틀린' 것이 아니라 <strong>더 정직한 불확실성 표현</strong>입니다. "
+        "예산 편성 시에는 이 넓은 범위 전체를 고려하는 것이 안전합니다.</p>")}
 
     <div class="chart-wrap" style="margin-top:20px">
       <img src="data:image/png;base64,{c5}" alt="램프업 곡선">

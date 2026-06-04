@@ -72,6 +72,13 @@ class ScenarioResult:
     annual_steady_p95: float
     # Which percentile source was used
     used_dist_fit: bool = False
+    # Monte Carlo CI (None when --monte-carlo not specified)
+    mc_ci_p50_lower: Optional[float] = None
+    mc_ci_p50_upper: Optional[float] = None
+    mc_ci_p75_lower: Optional[float] = None
+    mc_ci_p75_upper: Optional[float] = None
+    mc_ci_p95_lower: Optional[float] = None
+    mc_ci_p95_upper: Optional[float] = None
 
 
 @dataclass

@@ -1,3 +1,5 @@
+import numpy as np
+from dataclasses import replace
 from .schemas import ScenarioResult, DistFitResult
 
 SCENARIOS = {
@@ -113,6 +115,62 @@ def forecast_scenarios(
         ))
 
     return results
+
+
+_MC_ADOPTION_PARAMS = {
+    "conservative": (0.20, 0.10),
+    "moderate":     (0.45, 0.12),
+    "aggressive":   (0.70, 0.10),
+}
+
+
+def _beta_from_mean_std(mean: float, std: float) -> tuple[float, float]:
+    """Beta 분포의 α, β를 mean과 std로부터 계산."""
+    var = std ** 2
+    alpha = mean * (mean * (1 - mean) / var - 1)
+    beta  = (1 - mean) * (mean * (1 - mean) / var - 1)
+    return max(alpha, 0.5), max(beta, 0.5)
+
+
+def monte_carlo_ci(
+    scenarios: list[ScenarioResult],
+    population_percentiles: dict,
+    enterprise_users: int,
+    bias_factor: float,
+    bias_sigma: float = 0.40,
+    n_sim: int = 5_000,
+    rng_seed: int | None = None,
+) -> list[ScenarioResult]:
+    """
+    bias_factor 와 adoption_rate 의 불확실성을 Monte Carlo 로 반영해
+    MC CI 필드를 채운 새 ScenarioResult 리스트를 반환한다.
+
+    분포 설계:
+      bias_factor  ~ LogNormal(log(bias_center), bias_sigma)
+        → 양수, 중앙값 = bias_center, sigma=0.40 ≈ 90% 범위 1.4x~4.5x
+      adoption_rate ~ Beta(α, β)  per scenario
+        → 시나리오 중심값(Conservative 20% / Moderate 45% / Aggressive 70%) 기준
+    """
+    rng = np.random.default_rng(rng_seed)
+    bias_sims = rng.lognormal(np.log(bias_factor), bias_sigma, n_sim)
+
+    updated = []
+    for s in scenarios:
+        key = s.name.lower()
+        adopt_mean, adopt_std = _MC_ADOPTION_PARAMS.get(key, (s.adoption_rate, 0.12))
+        alpha, beta = _beta_from_mean_std(adopt_mean, adopt_std)
+        adopt_sims = rng.beta(alpha, beta, n_sim)
+
+        mc_fields = {}
+        for pxx, attr in [("p50", "p50"), ("p75", "p75"), ("p95", "p95")]:
+            user_pxx = population_percentiles[pxx]
+            costs = user_pxx / bias_sims * enterprise_users * adopt_sims
+            mc_fields[f"mc_ci_{attr}_lower"] = float(np.percentile(costs, 2.5))
+            mc_fields[f"mc_ci_{attr}_upper"] = float(np.percentile(costs, 97.5))
+
+        updated.append(replace(s, **mc_fields))
+
+    return updated
 
 
 def bias_sensitivity_table(

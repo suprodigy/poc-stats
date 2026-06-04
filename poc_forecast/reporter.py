@@ -90,19 +90,28 @@ def print_report(report: ForecastReport, verbose: bool = False):
         header = [""] + [f"{s.name}\n({s.adoption_rate:.0%}, {s.active_users:,}명)" for s in report.scenarios]
         rows = []
         rows.append(["── 월간 ──"] + [""] * len(report.scenarios))
+        has_mc = any(s.mc_ci_p50_lower is not None for s in report.scenarios)
+        ci_label = "  95% CI (MC)" if has_mc else "  95% CI"
+
+        def _pick_ci(s, mc_lo, mc_hi, boot_lo, boot_hi):
+            if mc_lo is not None:
+                return _ci(mc_lo, mc_hi, usd)
+            return _ci(boot_lo, boot_hi, usd)
+
         rows.append(["P50"] + [_fmt(s.monthly_p50, usd) for s in report.scenarios])
-        rows.append(["  95% CI"] + [_ci(s.ci_p50_lower, s.ci_p50_upper, usd) for s in report.scenarios])
+        rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p50_lower, s.mc_ci_p50_upper, s.ci_p50_lower, s.ci_p50_upper) for s in report.scenarios])
         rows.append(["P75"] + [_fmt(s.monthly_p75, usd) for s in report.scenarios])
-        rows.append(["  95% CI"] + [_ci(s.ci_p75_lower, s.ci_p75_upper, usd) for s in report.scenarios])
+        rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p75_lower, s.mc_ci_p75_upper, s.ci_p75_lower, s.ci_p75_upper) for s in report.scenarios])
         rows.append(["P95"] + [_fmt(s.monthly_p95, usd) for s in report.scenarios])
-        rows.append(["  95% CI"] + [_ci(s.ci_p95_lower, s.ci_p95_upper, usd) for s in report.scenarios])
+        rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p95_lower, s.mc_ci_p95_upper, s.ci_p95_lower, s.ci_p95_upper) for s in report.scenarios])
         rows.append(["── 연간 (램프업 포함) ──"] + [""] * len(report.scenarios))
         rows.append(["P50"] + [_fmt(s.annual_p50, usd) for s in report.scenarios])
         rows.append(["P75"] + [_fmt(s.annual_p75, usd) for s in report.scenarios])
         rows.append(["P95"] + [_fmt(s.annual_p95, usd) for s in report.scenarios])
         print(tabulate(rows, headers=header, tablefmt="simple", disable_numparse=True))
         dist_label = "분포 기반" if report.scenarios[0].used_dist_fit else "경험적"
-        print(f"  단위: {unit}  |  백분위수 소스: {dist_label}")
+        ci_src = "Monte Carlo (bias·채택률 불확실성 포함)" if has_mc else "Bootstrap (표본 추정 오차)"
+        print(f"  단위: {unit}  |  백분위수 소스: {dist_label}  |  CI 방법: {ci_src}")
         print("  * 용어: P50=중앙값(절반이 이 이하), P75=상위25%선(예산 기준), P95=상위5%선(최악 대비)")
         print("  * 95% CI=참값이 95% 확률로 들어가는 범위 (표본 한계로 인한 불확실성)")
 

@@ -5,6 +5,7 @@ import numpy as np
 from .schemas import ForecastReport
 from .distribution import describe_fit
 from .scaling import RAMP_MULTIPLIERS, RAMP_SUM
+from .distribution import WORKING_DAYS_PER_MONTH
 from . import visualizer as viz
 
 
@@ -171,6 +172,25 @@ details.toggle .body strong { color: #2c3e50; }
 .footnote { font-size: 11px; color: #95a5a6; margin-top: 10px; line-height: 1.6; }
 .appendix-note { font-size: 12px; color: #7f8c8d; background: #f8f9fa;
                  border-radius: 6px; padding: 8px 14px; margin: 8px 0; }
+
+/* Step-by-Step 계산 흐름 */
+.sbs-step { display: flex; gap: 14px; background: #fff; border-radius: 8px;
+            padding: 16px 20px; margin: 0; box-shadow: 0 2px 8px rgba(0,0,0,.07);
+            border-left: 4px solid #3498db; }
+.sbs-num { background: #3498db; color: #fff; border-radius: 50%; width: 30px; height: 30px;
+           flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+           font-weight: 700; font-size: 13px; }
+.sbs-body { flex: 1; }
+.sbs-body .t { font-weight: 700; font-size: 14px; color: #2c3e50; }
+.sbs-body .d { font-size: 12.5px; color: #555; line-height: 1.6; margin-top: 4px; }
+.sbs-calc { background: #f4f8fb; border-radius: 6px; padding: 8px 12px; margin-top: 8px;
+            font-size: 12.5px; font-family: 'Consolas','Monaco',monospace; color: #34495e;
+            line-height: 1.7; word-break: break-word; }
+.sbs-result { display: inline-block; background: #eafaf1; border: 1px solid #27ae60;
+              color: #1e8449; font-weight: 700; border-radius: 6px;
+              padding: 3px 10px; margin-top: 8px; font-size: 13px; }
+.sbs-arrow { text-align: center; color: #bcc6cf; font-size: 18px; margin: 2px 0; line-height: 1; }
+.sbs-why { font-size: 11.5px; color: #7f8c8d; margin-top: 6px; font-style: italic; }
 """
 
 
@@ -207,6 +227,191 @@ def _example(html: str) -> str:
 
 def _section_link(text: str) -> str:
     return f'<p class="section-link">{text}</p>'
+
+
+_SBS_ARROW = '<div class="sbs-arrow">▼</div>'
+
+
+def _step(n, title: str, desc: str, calc: str = None,
+          result: str = None, why: str = None) -> str:
+    """Step-by-Step 계산 흐름의 단일 단계 카드."""
+    calc_html   = f'<div class="sbs-calc">{calc}</div>' if calc else ""
+    result_html = f'<div class="sbs-result">→ {result}</div>' if result else ""
+    why_html    = f'<div class="sbs-why">{why}</div>' if why else ""
+    return (f'<div class="sbs-step"><div class="sbs-num">{n}</div>'
+            f'<div class="sbs-body"><div class="t">{title}</div>'
+            f'<div class="d">{desc}</div>{calc_html}{result_html}{why_html}</div></div>')
+
+
+def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
+                 stats: dict, modr, aggr, has_mc: bool) -> str:
+    """원자료 → 기초 통계 → 분포 → 보정 → 전사 확대 → 결론까지의 단계별 유도 과정."""
+    f = lambda v: _fmt(v, usd)
+    quality_kr = {"good": "양호", "marginal": "보통", "poor": "불량"}[fit.fit_quality]
+    use_dist = fit.fit_quality == "good"
+    # 예측에 실제 사용된 사용자당 백분위수 (분포 양호 시 분포값, 아니면 경험값)
+    src_p50 = fit.p50_dist if use_dist else stats["ex_p50"]
+    src_label = "분포 기반" if use_dist else "경험적"
+    bf = report.bias_factor
+    corrected_p50 = src_p50 / bf
+    active = modr.active_users if modr else 0
+
+    steps = []
+
+    # 1. 원자료
+    steps.append(_step(
+        1, "원자료 수집",
+        f"POC 참가자 {report.poc_users}명이 {report.poc_period_days}일간 남긴 "
+        "<b>usage_credit</b> 사용 로그를 모두 합산합니다.",
+        calc=f"Σ(전체 사용 로그의 usage_credit) = <b>{report.total_poc_credit:,.0f}</b> 크레딧",
+        result=f"POC 총 크레딧 {report.total_poc_credit:,.0f} cr",
+        why="모든 추정의 출발점은 가정이 아닌 실측 데이터입니다.",
+    ))
+
+    # 2. 사용자별 집계
+    steps.append(_step(
+        2, "사용자별 집계",
+        f"로그를 이메일(사용자) 단위로 묶어 {report.poc_users}명 각각의 총 크레딧을 구합니다. "
+        "분석 단위는 '개별 로그'가 아니라 '사용자 1명'입니다.",
+        calc=f"사용자당 평균(단순) = {report.total_poc_credit:,.0f} ÷ {report.poc_users} "
+             f"= <b>{stats['raw_avg_per_user']:,.1f}</b> cr/인 (POC 기간 전체)",
+        result=f"사용자별 총 크레딧 {report.poc_users}개 값",
+        why="비용은 사용자 수에 비례하므로 사용자 단위로 봐야 전사 확대가 가능합니다.",
+    ))
+
+    # 3. 기초 기술통계 (월 환산 배열 기준)
+    steps.append(_step(
+        3, "기초 기술통계",
+        "사용자별 값의 분포를 평균·중앙값·표준편차·범위로 요약합니다. "
+        "(아래 숫자는 5단계 월간 환산 기준)",
+        calc=f"평균 {f(stats['ex_mean'])} · 중앙값(P50) {f(stats['ex_p50'])} · "
+             f"표준편차 {f(stats['ex_std'])}<br>"
+             f"최소 {f(stats['ex_min'])} · 최대 {f(stats['ex_max'])} (단위: {unit}/월)",
+        result=f"평균 {f(stats['ex_mean'])} vs 중앙값 {f(stats['ex_p50'])}",
+        why="평균과 중앙값이 크게 다르면 분포가 한쪽으로 치우쳤다는 신호입니다.",
+    ))
+
+    # 4. 평균의 함정
+    steps.append(_step(
+        4, "평균의 함정 발견 — 왜 백분위수인가",
+        "평균이 중앙값보다 크게 높고 표준편차가 평균에 육박하면, 소수 헤비유저가 "
+        "평균을 끌어올린 <b>우편향(heavy-tail)</b> 분포입니다.",
+        calc=f"평균 ÷ 중앙값 = {stats['ex_mean']:,.0f} ÷ {stats['ex_p50']:,.0f} "
+             f"= <b>{stats['mean_vs_p50']:.1f}배</b> &nbsp;|&nbsp; "
+             f"변동계수 CV = 표준편차 ÷ 평균 = <b>{stats['ex_cv']:.2f}</b>",
+        result="평균은 과대평가 → 백분위수(P50/P75/P95) 채택",
+        why="평균으로 전사 비용을 곱하면 실제보다 부풀려집니다. 이것이 백분위수를 쓰는 핵심 근거입니다.",
+    ))
+
+    # 5. 월간 정규화
+    steps.append(_step(
+        5, "월간 정규화",
+        f"POC는 {report.poc_period_days}일(캘린더 기준)이지만 비용은 '월' 단위로 관리합니다. "
+        "실 활동일을 반영해 월 근무일 22일 기준으로 환산합니다.",
+        calc=f"scale = 22 ÷ ({report.poc_period_days}일 × 활동일비율 {report.working_day_ratio:.0%}) "
+             f"= <b>{stats['monthly_scale']:.3f}</b><br>"
+             f"사용자별 월 크레딧 = 사용자별 총 크레딧 × {stats['monthly_scale']:.3f}",
+        result=f"사용자별 '월 크레딧' 배열 {report.poc_users}개",
+        why="기간이 다른 POC들을 공정하게 비교하고 월 예산에 직접 대응시키기 위함입니다.",
+    ))
+
+    # 6. 백분위수
+    steps.append(_step(
+        6, "백분위수 산출",
+        "월 크레딧을 작은 값부터 정렬해 P50/P75/P95 위치의 값을 읽습니다. "
+        "각각 대표값·예산값·최악값에 해당합니다.",
+        calc=f"P50(중앙값) {f(stats['ex_p50'])} · P75(예산선) {f(stats['ex_p75'])} · "
+             f"P95(최악) {f(stats['ex_p95'])} &nbsp;<i>(경험적, {unit}/월·사용자당)</i>",
+        result=f"사용자 1명당 P50 {f(stats['ex_p50'])}",
+        why="단일 평균 대신 3개 지점으로 '보통~최악'의 폭을 함께 봅니다.",
+    ))
+
+    # 7. 분포 적합
+    steps.append(_step(
+        7, "분포 적합 (로그정규)",
+        "표본 100명을 넘어선 일반화를 위해 사용량에 로그정규 분포를 적합하고, "
+        "KS 검정으로 적합 품질을 객관적으로 평가합니다.",
+        calc=f"적합 모수 μ={fit.mu:.2f}, σ={fit.sigma:.2f} · KS p={fit.ks_pvalue:.3f} "
+             f"[<b>{quality_kr}</b>]<br>"
+             f"분포 기반 백분위수 P_q = exp(μ + z_q·σ) → "
+             f"P50 {f(fit.p50_dist)} · P75 {f(fit.p75_dist)} · P95 {f(fit.p95_dist)}",
+        result=(f"<b>{src_label}</b> 백분위수 채택 (P50 {f(src_p50)})"),
+        why=("KS p>0.05라 분포 적합이 양호 → 분포 기반 백분위수 사용 (표본 외 극단값까지 안정적 추정)"
+             if use_dist else
+             "KS p<0.05라 적합이 불충분 → 경험적 백분위수 사용 (표본 직접 계산)"),
+    ))
+
+    # 8. 부트스트랩
+    bci = (modr.ci_p50_lower, modr.ci_p50_upper) if modr else (0, 0)
+    steps.append(_step(
+        8, "표본 불확실성 추정 (부트스트랩)",
+        f"표본이 {report.poc_users}명뿐이라 백분위수 자체에 추정 오차가 있습니다. "
+        "데이터를 2000회 재추출해 그 오차 범위를 정량화합니다.",
+        calc=f"부트스트랩 2000회 → Moderate 월간 P50의 95% 신뢰구간 = "
+             f"[{f(bci[0])} ~ {f(bci[1])}]",
+        result=f"P50 95% CI [{f(bci[0])} ~ {f(bci[1])}]",
+        why="'점 추정 하나'가 아니라 '범위'로 표본 한계를 정직하게 드러냅니다.",
+    ))
+
+    # 9. 편향 보정
+    steps.append(_step(
+        9, "POC 선발 편향 보정",
+        "POC 참가자는 자발적·열성적 사용자라 일반 직원보다 많이 씁니다. "
+        f"편향 계수 {bf}x로 나눠 일반 직원 수준으로 낮춥니다.",
+        calc=f"보정된 사용자당 P50 = {f(src_p50)} ÷ {bf} = <b>{f(corrected_p50)}</b> {unit}/월",
+        result=f"일반 직원 1명당 P50 {f(corrected_p50)}",
+        why="이 계수가 예측의 가장 큰 변수 → 논거 3(민감도)에서 별도 검증합니다.",
+    ))
+
+    # 10. 전사 확대 + 시나리오
+    steps.append(_step(
+        10, "전사 확대 + 채택률 시나리오",
+        f"보정된 1명당 값에 전사 {report.enterprise_users:,}명과 채택률을 곱합니다. "
+        "채택률은 Conservative 20% / Moderate 45% / Aggressive 70% 3가지.",
+        calc=f"Moderate: {f(corrected_p50)} × ({report.enterprise_users:,}명 × 45%={active:,}명) "
+             f"= <b>{f(modr.monthly_p50) if modr else '-'}</b> {unit}/월",
+        result=f"Moderate 월간 P50 {f(modr.monthly_p50) if modr else '-'}",
+        why="POC 1명의 사용량을 전사 규모 비용으로 확대하는 핵심 단계입니다.",
+    ))
+
+    # 11. 몬테카를로 (조건부)
+    if has_mc and modr and modr.mc_ci_p50_lower is not None:
+        steps.append(_step(
+            11, "파라미터 불확실성 (몬테카를로)",
+            "편향 계수와 채택률 '자체'도 불확실합니다. 두 값을 분포로 두고 5000회 "
+            "시뮬레이션해 더 솔직한 범위를 구합니다.",
+            calc="편향계수 ~ LogNormal, 채택률 ~ Beta · 5000회<br>"
+                 f"Moderate 월간 P50의 95% CI = "
+                 f"[{f(modr.mc_ci_p50_lower)} ~ {f(modr.mc_ci_p50_upper)}]",
+            result=f"MC P50 95% CI [{f(modr.mc_ci_p50_lower)} ~ {f(modr.mc_ci_p50_upper)}]",
+            why="8단계(표본 오차)보다 넓어집니다 — 가정의 불확실성까지 더했기 때문입니다.",
+        ))
+
+    # 12. 연간화
+    n = 12 if (has_mc and modr and modr.mc_ci_p50_lower is not None) else 11
+    steps.append(_step(
+        n, "연간화 (램프업 반영)",
+        "전사 도입 첫해는 6개월에 걸쳐 점진적으로 정착합니다. 월 비용에 12개월 "
+        "램프업 가중합을 곱해 1년차 비용을 구합니다.",
+        calc=f"연간 = 월간 × {RAMP_SUM:.2f} (1~2월 30%·3~4월 60%·5~6월 80%·7~12월 100%)<br>"
+             f"Moderate 연간 P50 = {f(modr.monthly_p50) if modr else '-'} × {RAMP_SUM:.2f} "
+             f"= <b>{f(modr.annual_p50) if modr else '-'}</b>",
+        result=f"Moderate 연간 P50 {f(modr.annual_p50) if modr else '-'}",
+        why="첫해는 '월×12'보다 작습니다. 도입 현실을 반영한 보정입니다.",
+    ))
+
+    # 13. 결론
+    steps.append(_step(
+        n + 1, "결론 — 예산 범위 도출",
+        "위 과정을 종합해 단일 숫자가 아닌 <b>방어 가능한 예산 범위</b>로 정리합니다.",
+        calc=f"권장 월 예산 = Moderate P50~P75 = "
+             f"<b>{f(modr.monthly_p50) if modr else '-'} ~ {f(modr.monthly_p75) if modr else '-'}</b><br>"
+             f"최대 대비 = Aggressive P95 = {f(aggr.monthly_p95) if aggr else '-'} {unit}/월",
+        result="아래 '결론' 섹션의 권장 예산 범위",
+        why="각 단계가 근거를 한 층씩 쌓아 이 결론을 뒷받침합니다.",
+    ))
+
+    return _SBS_ARROW.join(steps)
 
 
 def _build_exec_summary(cons, modr, aggr, usd: float, unit: str,
@@ -361,7 +566,19 @@ def generate(report: ForecastReport, path: str):
     ex_p95  = float(np.percentile(monthly_arr, 95))
     ex_mean = float(np.mean(monthly_arr))
     ex_max  = float(np.max(monthly_arr))
+    ex_min  = float(np.min(monthly_arr))
+    ex_std  = float(np.std(monthly_arr, ddof=1)) if len(monthly_arr) > 1 else 0.0
+    ex_cv   = ex_std / ex_mean if ex_mean > 0 else 0.0
     mean_vs_p50 = ex_mean / ex_p50 if ex_p50 > 0 else 1.0
+    raw_avg_per_user = report.total_poc_credit / report.poc_users if report.poc_users else 0.0
+    eff_working = report.poc_period_days * report.working_day_ratio
+    monthly_scale = WORKING_DAYS_PER_MONTH / eff_working if eff_working > 0 else 0.0
+    step_stats = {
+        "ex_p50": ex_p50, "ex_p75": ex_p75, "ex_p95": ex_p95,
+        "ex_mean": ex_mean, "ex_max": ex_max, "ex_min": ex_min,
+        "ex_std": ex_std, "ex_cv": ex_cv, "mean_vs_p50": mean_vs_p50,
+        "raw_avg_per_user": raw_avg_per_user, "monthly_scale": monthly_scale,
+    }
 
     # Heavy 그룹 크레딧 점유율
     heavy_share = report.segment_stats[0].credit_share_pct if report.segment_stats else 0
@@ -597,6 +814,30 @@ def generate(report: ForecastReport, path: str):
         report.bias_factor, report.poc_users, report.poc_period_days, fit,
     )
 
+    # --- Step-by-Step 유도 과정 ---
+    steps_html = _build_steps(report, fit, usd, unit, step_stats, modr, aggr, has_mc)
+
+    # --- 파라미터 요약표 (부록 B) ---
+    fit_q_kr = {"good": "양호", "marginal": "보통", "poor": "불량"}[fit.fit_quality]
+    params_table = f"""
+<table>
+<tr><th>파라미터</th><th>값</th><th>의미 / 근거</th></tr>
+<tr><td>POC 표본</td><td>{report.poc_users}명 · {report.poc_period_days}일</td>
+    <td>분석 기반 실측 데이터</td></tr>
+<tr><td>활동일 비율</td><td>{report.working_day_ratio:.0%}</td>
+    <td>월간 환산 scale = {step_stats['monthly_scale']:.3f} 산출에 사용</td></tr>
+<tr><td>분포 적합</td><td>μ={fit.mu:.2f}, σ={fit.sigma:.2f} (KS p={fit.ks_pvalue:.3f})</td>
+    <td>로그정규 · 적합 품질 <b>{fit_q_kr}</b></td></tr>
+<tr><td>편향 계수</td><td>{report.bias_factor}x</td>
+    <td>POC 열성 사용자 → 일반 직원 보정 (타당 1.5x~4.0x)</td></tr>
+<tr><td>채택률 시나리오</td><td>20% / 45% / 70%</td>
+    <td>Conservative / Moderate / Aggressive</td></tr>
+<tr><td>램프업 가중합</td><td>{RAMP_SUM:.2f}</td>
+    <td>1년차 연간 = 월간 × {RAMP_SUM:.2f} (6개월 점진 정착)</td></tr>
+<tr><td>전사 인원</td><td>{report.enterprise_users:,}명</td>
+    <td>확대 대상 모집단</td></tr>
+</table>"""
+
     # --- 전체 HTML 조합 ---
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -747,6 +988,14 @@ def generate(report: ForecastReport, path: str):
     {_section_link("이상의 3가지 논거를 종합한 최종 예산 권장안을 다음 섹션에서 확인하세요.")}
   </section>
 
+  <!-- ══ 분석 과정 Step-by-Step ════════════════════════════════════ -->
+  <section id="derivation">
+    <h2>분석 과정 전체 — 기초 통계에서 결론까지 (Step by Step)</h2>
+    {_plain("아래는 원자료에서 출발해 최종 예산 결론에 이르는 모든 계산 단계입니다. 각 단계의 <b>녹색 결과값이 다음 단계의 입력</b>으로 이어집니다. 숫자가 어떻게 변해가는지 따라가면 결론의 근거를 직접 검증할 수 있습니다.")}
+    {steps_html}
+    {_section_link("이 과정을 거쳐 도출된 최종 예산 권장안은 다음과 같습니다.")}
+  </section>
+
   <!-- ══ 결론: 권장 예산 ════════════════════════════════════════════ -->
   <section id="conclusion">
     <h2>결론 — 권장 예산 및 방어 근거</h2>
@@ -764,11 +1013,11 @@ def generate(report: ForecastReport, path: str):
     </div>
   </section>
 
-  <!-- ══ 부록 B: 방법론 상세 ════════════════════════════════════════ -->
+  <!-- ══ 부록 B: 핵심 가정·파라미터 요약 ════════════════════════════ -->
   <section id="assumptions">
-    <h2>부록 B — 방법론 상세 및 가정 (검증용)</h2>
-    <div class="appendix-note">📎 결론의 논리적 근거를 검증하고 싶으시면 이 부록을 참고하세요. 예측에 사용된 6단계 추론 사슬과 핵심 가정을 상세히 기술합니다.</div>
-    {chain_html}
+    <h2>부록 B — 핵심 가정 및 파라미터 요약 (검증용)</h2>
+    <div class="appendix-note">📎 예측에 사용된 모든 파라미터를 한 표로 정리했습니다. 단계별 상세 유도 과정은 위 <b>'분석 과정 전체 (Step by Step)'</b> 섹션을 참고하세요.</div>
+    {params_table}
   </section>
 
 </div>

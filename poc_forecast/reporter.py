@@ -103,6 +103,8 @@ def print_report(report: ForecastReport, verbose: bool = False):
         print(tabulate(rows, headers=header, tablefmt="simple", disable_numparse=True))
         dist_label = "분포 기반" if report.scenarios[0].used_dist_fit else "경험적"
         print(f"  단위: {unit}  |  백분위수 소스: {dist_label}")
+        print("  * 용어: P50=중앙값(절반이 이 이하), P75=상위25%선(예산 기준), P95=상위5%선(최악 대비)")
+        print("  * 95% CI=참값이 95% 확률로 들어가는 범위 (표본 한계로 인한 불확실성)")
 
     # ── Section 5: 민감도 ───────────────────────────────
     if report.sensitivity:

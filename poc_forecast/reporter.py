@@ -115,9 +115,34 @@ def print_report(report: ForecastReport, verbose: bool = False):
         print("  * 용어: P50=중앙값(절반이 이 이하), P75=상위25%선(예산 기준), P95=상위5%선(최악 대비)")
         print("  * 95% CI=참값이 95% 확률로 들어가는 범위 (표본 한계로 인한 불확실성)")
 
-    # ── Section 5: 민감도 ───────────────────────────────
+    # ── Section 5: 역할 기반 자동 추론 예측 ─────────────
+    if report.role_scenarios:
+        print("\n[5] 역할 기반 자동 추론 예측 (세그먼트 비율 × 인원)")
+        print("-" * 68)
+        rs = report.role_scenarios[0]
+        print(f"  POC 세그먼트 비율 → bias({report.bias_factor}x) 보정 후:")
+        print(f"    Heavy {rs.adj_heavy_ratio:.1%}  /  Medium {rs.adj_medium_ratio:.1%}  /  Light {rs.adj_light_ratio:.1%}")
+        role_rows = [[
+            r.name,
+            f"{r.adoption_rate:.0%}",
+            f"{r.heavy_n:,}",
+            f"{r.medium_n:,}",
+            f"{r.light_n:,}",
+            _fmt(r.monthly_p50, usd),
+            _fmt(r.monthly_p75, usd),
+            _fmt(r.monthly_p95, usd),
+            _fmt(r.annual_p50, usd),
+        ] for r in report.role_scenarios]
+        print(tabulate(
+            role_rows,
+            headers=["시나리오", "채택률", "Heavy", "Medium", "Light", "월P50", "월P75", "월P95", "연P50(램프)"],
+            tablefmt="simple", disable_numparse=True,
+        ))
+        print("  * P50~P95 범위는 같은 채택률 가정 하에 POC 내 분산만 반영 (기존 CI보다 좁음)")
+
+    # ── Section 6: 민감도 ───────────────────────────────
     if report.sensitivity:
-        print("\n[5] 편향 계수 민감도 (Moderate, P75 기준)")
+        print("\n[6] 편향 계수 민감도 (Moderate, P75 기준)")
         print("-" * 55)
         sens_rows = [[
             f"{r['bias_factor']}x",

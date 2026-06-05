@@ -159,6 +159,17 @@ def main():
         warnings=warnings,
     )
 
+    # ── 역할 기반 자동 추론 예측 ──────────────────────────
+    from . import role_model
+    report.role_scenarios = role_model.compute_role_scenarios(
+        segment_stats=segment_stats,
+        enterprise_users=args.enterprise_users,
+        bias_factor=args.bias_factor,
+        credit_to_usd=args.credit_to_usd,
+        scenario_keys=scenario_keys,
+        apply_ramp=not args.no_ramp,
+    )
+
     # ── 출력 ──────────────────────────────────────────────
     reporter.print_report(report, verbose=args.verbose)
 

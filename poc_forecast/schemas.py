@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 
 @dataclass
@@ -82,6 +82,25 @@ class ScenarioResult:
 
 
 @dataclass
+class RoleScenarioResult:
+    name: str
+    adoption_rate: float
+    active_users: int
+    heavy_n: int
+    medium_n: int
+    light_n: int
+    adj_heavy_ratio: float
+    adj_medium_ratio: float
+    adj_light_ratio: float
+    monthly_p50: float
+    monthly_p75: float
+    monthly_p95: float
+    annual_p50: float
+    annual_p75: float
+    annual_p95: float
+
+
+@dataclass
 class ForecastReport:
     poc_period_days: int
     poc_start: str
@@ -100,3 +119,4 @@ class ForecastReport:
     scenarios: list
     sensitivity: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    role_scenarios: list = field(default_factory=list)

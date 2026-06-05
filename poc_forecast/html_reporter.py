@@ -247,6 +247,7 @@ def _build_steps(
     stats: dict, modr, aggr, has_mc: bool,
     c1: str, c2: str, c3: str, c4: str, c5: str, c6: str,
     seg_table: str, forecast_table: str, sens_table: str,
+    role_table: str = "",
 ) -> str:
     """원자료 → 기초 통계 → 분포 → 보정 → 전사 확대 → 결론까지의 단계별 유도 과정.
     각 단계 카드 아래에 관련 차트·표·설명을 직접 삽입한다."""
@@ -460,6 +461,13 @@ def _build_steps(
     b += _chart(c4,
         "막대 = 시나리오별 월간 비용. 같은 시나리오 안에서도 P50→P95로 갈수록 비용이 올라갑니다.")
     b += forecast_table
+    if role_table:
+        b += role_table
+        b += _toggle("역할 기반 vs 기존 방법 — 무엇이 다른가요?",
+            "<b>기존(로그정규)</b>: 전체 사용자 분포를 로그정규로 fitting → 백분위수 → bias 보정. "
+            "Bootstrap CI가 채택률 불확실성과 함께 넓은 범위를 만듭니다.<br>"
+            "<b>역할 기반</b>: Heavy/Medium/Light 세그먼트별 실측 사용량 중앙값 × 세그먼트 인원 수. "
+            "같은 시나리오 안에서 P50~P95 범위가 훨씬 좁고 계산이 직관적입니다.")
     blocks.append(b)
 
     # ── Step 11: 몬테카를로 (조건부) ─────────────────────────────────
@@ -812,6 +820,38 @@ def generate(report: ForecastReport, path: str):
 {sens_rows}
 </table>""" if sens_rows else ""
 
+    # --- 역할 기반 자동 추론 표 ---
+    role_table = ""
+    if report.role_scenarios:
+        rs0 = report.role_scenarios[0]
+        role_rows_html = "".join(f"""
+<tr>
+  <td>{r.name} ({r.adoption_rate:.0%})<br><small>{r.active_users:,}명 활성</small></td>
+  <td style="text-align:center">{r.heavy_n:,}</td>
+  <td style="text-align:center">{r.medium_n:,}</td>
+  <td style="text-align:center">{r.light_n:,}</td>
+  <td>{_fmt(r.monthly_p50, usd)}</td>
+  <td>{_fmt(r.monthly_p75, usd)}</td>
+  <td>{_fmt(r.monthly_p95, usd)}</td>
+  <td>{_fmt(r.annual_p50, usd)}</td>
+</tr>""" for r in report.role_scenarios)
+        role_table = f"""
+<h4 style="margin:18px 0 8px">역할 기반 자동 추론 예측</h4>
+<p style="font-size:12px;color:#7f8c8d;margin:0 0 8px">
+  POC 세그먼트 비율(Heavy {rs0.adj_heavy_ratio:.1%} / Medium {rs0.adj_medium_ratio:.1%} / Light {rs0.adj_light_ratio:.1%})을
+  bias 보정({report.bias_factor}x) 후 각 시나리오 채택 인원에 자동 적용.
+</p>
+<table>
+<tr><th>시나리오</th>
+    <th>Heavy 인원</th><th>Medium 인원</th><th>Light 인원</th>
+    <th>월간 P50</th><th>월간 P75</th><th>월간 P95</th>
+    <th>연간 P50<br><small>(램프업포함)</small></th></tr>
+{role_rows_html}
+</table>
+<p style="font-size:11px;color:#7f8c8d;margin-top:6px">
+  P50~P95 범위 = 같은 채택률 내 POC 분산만 반영 (채택률 불확실성 없음 → 기존 CI보다 좁음)
+</p>"""
+
     # --- Executive Summary ---
     exec_summary_html = _build_exec_summary(
         cons, modr, aggr, usd, unit,
@@ -854,7 +894,7 @@ def generate(report: ForecastReport, path: str):
     steps_html = _build_steps(
         report, fit, usd, unit, step_stats, modr, aggr, has_mc,
         c1, c2, c3, c4, c5, c6,
-        seg_table, forecast_table, sens_table,
+        seg_table, forecast_table, sens_table, role_table,
     )
 
     # --- 파라미터 요약표 (부록 B) ---

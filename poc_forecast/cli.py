@@ -38,6 +38,11 @@ def main():
                         help="bias_factor 불확실성 로그 스케일 sigma (기본 0.40 ≈ 90%% 범위 1.4x~4.5x)")
     parser.add_argument("--mc-iterations", type=int, default=5000, metavar="N",
                         help="Monte Carlo 반복 횟수 (기본 5000)")
+    parser.add_argument("--tiers", default="12,72,82,492", metavar="USD",
+                        help="부서별 티어 월 USD 상한 (쉼표구분, 기본 12,72,82,492)")
+    parser.add_argument("--tier-names", default="Tier1,Tier2,Tier3,Tier4", metavar="NAMES")
+    parser.add_argument("--no-tiers", action="store_true",
+                        help="부서별 티어 분배 분석 생략")
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -86,6 +91,12 @@ def main():
         warnings.append(
             f"P50 부트스트랩 CI 폭이 P50의 {ci_width_ratio:.0%}. "
             "표본 분산이 커서 예측 불확실성이 높습니다."
+        )
+
+    if not args.no_tiers and args.credit_to_usd == 1.0:
+        warnings.append(
+            "티어 분석: --credit-to-usd 미설정(1.0). "
+            "실제 크레딧 단가(예: 0.04)를 지정해야 티어 상한이 올바르게 적용됩니다."
         )
 
     # ── 시나리오 예측 ─────────────────────────────────────
@@ -168,6 +179,19 @@ def main():
         scenario_keys=scenario_keys,
         apply_ramp=not args.no_ramp,
     )
+
+    # ── 부서별 티어 분배 권장 ─────────────────────────────
+    if not args.no_tiers:
+        from . import tier_model
+        caps = [float(x) for x in args.tiers.split(",")]
+        names = [x.strip() for x in args.tier_names.split(",")][:len(caps)]
+        if len(names) < len(caps):
+            names += [f"Tier{i+1}" for i in range(len(names), len(caps))]
+        report.tier_defs = tier_model.build_tier_defs(caps, names, args.credit_to_usd)
+        report.tier_allocations, report.tier_company = tier_model.compute_tier_allocations(
+            user_stats, monthly_per_user, caps, names,
+            args.credit_to_usd, args.bias_factor,
+        )
 
     # ── 출력 ──────────────────────────────────────────────
     reporter.print_report(report, verbose=args.verbose)

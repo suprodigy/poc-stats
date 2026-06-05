@@ -784,6 +784,130 @@ def _build_conclusion(cons, modr, aggr, usd: float, unit: str,
 </div>"""
 
 
+# 티어 색상: T1 초록 → T4 빨강 (저사용 → 고사용)
+_TIER_COLORS = ["#27ae60", "#f1c40f", "#e67e22", "#e74c3c",
+                "#8e44ad", "#34495e"]
+
+
+def _build_tier_section(report: ForecastReport) -> str:
+    allocs = report.tier_allocations
+    comp = report.tier_company
+    tdefs = report.tier_defs
+    if not (allocs and comp and tdefs):
+        return ""
+
+    n_t = len(tdefs)
+    rate = report.credit_to_usd
+    colors = [_TIER_COLORS[i % len(_TIER_COLORS)] for i in range(n_t)]
+    util = comp["avg_expected_usd"] / comp["avg_committed_usd"] if comp["avg_committed_usd"] else 0
+    save = (1 - comp["avg_committed_usd"] / comp["flat_top_usd"]) if comp["flat_top_usd"] else 0
+
+    # 방법 설명
+    method = _plain(
+        f"POC {report.poc_users}명의 실측 월 사용량을 편향 계수 <b>{report.bias_factor}x</b>로 보정해 "
+        "일반 직원 수준으로 낮춘 뒤, 각 사용자의 <b>평균 사용량을 커버하는 가장 작은 티어</b>에 배정하고 "
+        "부서별로 비율을 집계했습니다. 상한은 도달 시 사용을 막는 한도이므로, 실제 도입 시 부서별로 "
+        "이 비율대로 티어를 분배하면 비용을 통제할 수 있습니다.")
+
+    # 티어 정의 칩
+    chips = "".join(
+        f'<span style="display:inline-block;margin:2px 6px 2px 0;padding:3px 9px;border-radius:12px;'
+        f'background:{colors[i]};color:#fff;font-size:12px;font-weight:700">'
+        f'{tdefs[i].name} ≤ ${tdefs[i].monthly_usd:,.0f}/월 ({tdefs[i].credit_cap:,.0f}cr)</span>'
+        for i in range(n_t))
+    chip_box = (f'<div style="margin:10px 0">티어 상한 (1 credit = ${rate:g}): <br>{chips}</div>')
+
+    # 전사 요약 카드
+    company_mix = _tier_stacked_bar(comp["tier_pcts"], colors, tdefs, height=26, show_label=True)
+    summary = f"""
+<div style="background:#f8f9fb;border:1px solid #e1e5ea;border-radius:10px;padding:16px;margin:12px 0">
+  <div style="font-size:13px;font-weight:700;color:#2c3e50;margin-bottom:8px">전사 합산 티어 믹스 ({comp['n_users']}명)</div>
+  {company_mix}
+  <div style="display:flex;gap:14px;margin-top:14px;text-align:center;flex-wrap:wrap">
+    <div style="flex:1;min-width:120px;background:#eafaf1;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#27ae60;font-weight:700">1인당 평균 실사용</div>
+      <div style="font-size:20px;font-weight:800;color:#27ae60">${comp['avg_expected_usd']:,.0f}<small style="font-size:11px">/월</small></div>
+    </div>
+    <div style="flex:1;min-width:120px;background:#fef9e7;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#f39c12;font-weight:700">1인당 평균 배정 상한</div>
+      <div style="font-size:20px;font-weight:800;color:#f39c12">${comp['avg_committed_usd']:,.0f}<small style="font-size:11px">/월</small></div>
+    </div>
+    <div style="flex:1;min-width:120px;background:#eef2fb;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#2980b9;font-weight:700">상한 활용률</div>
+      <div style="font-size:20px;font-weight:800;color:#2980b9">{util:.0%}</div>
+    </div>
+    <div style="flex:1;min-width:120px;background:#fdedec;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#c0392b;font-weight:700">전원 최고티어 대비 절감</div>
+      <div style="font-size:20px;font-weight:800;color:#c0392b">{save:.0%}</div>
+    </div>
+  </div>
+</div>"""
+
+    # 부서별 테이블 (스택 막대 포함)
+    rows = ""
+    for a in allocs:
+        mark = ('<span title="인원 5명 미만 — 표본 작음" '
+                'style="color:#e67e22">★</span> ') if a.n_users < 5 else ""
+        bar = _tier_stacked_bar(a.tier_pcts, colors, tdefs, height=20, show_label=False)
+        rows += f"""
+<tr>
+  <td style="white-space:nowrap">{mark}{a.department}</td>
+  <td style="text-align:center">{a.n_users}</td>
+  <td style="min-width:200px">{bar}</td>
+  <td style="text-align:right">${a.avg_monthly_usd:,.0f}</td>
+  <td style="text-align:right">${a.committed_per_user_usd:,.0f}</td>
+</tr>"""
+    legend = "".join(
+        f'<span style="display:inline-block;margin-right:12px;font-size:11px;color:#555">'
+        f'<span style="display:inline-block;width:10px;height:10px;background:{colors[i]};'
+        f'border-radius:2px;margin-right:3px;vertical-align:middle"></span>{tdefs[i].name}</span>'
+        for i in range(n_t))
+    table = f"""
+<div style="margin-top:6px;margin-bottom:6px">{legend}</div>
+<table>
+<tr><th>부서</th><th>인원</th><th>티어 구성 비율</th>
+    <th style="text-align:right">평균 실사용<br><small>$/월·인</small></th>
+    <th style="text-align:right">평균 배정 상한<br><small>$/월·인</small></th></tr>
+{rows}
+</table>
+<p style="font-size:11px;color:#7f8c8d;margin-top:6px">
+  부서는 1인당 평균 실사용 내림차순 정렬. <span style="color:#e67e22">★</span> = 인원 5명 미만(표본 작아 변동 큼).
+</p>"""
+
+    # 주의 토글
+    cautions = ""
+    if n_t >= 3 and abs(tdefs[2].monthly_usd - tdefs[1].monthly_usd) < tdefs[1].monthly_usd:
+        cautions += (f"<p><b>{tdefs[1].name}(${tdefs[1].monthly_usd:,.0f})·"
+                     f"{tdefs[2].name}(${tdefs[2].monthly_usd:,.0f})</b>는 상한이 근접해 "
+                     f"{tdefs[2].name} 배정이 거의 발생하지 않습니다. 사용량이 아닌 기능 차이로 구분하는 티어라면 "
+                     "현 정의를 유지하고, 사용량 기준 구분이 목적이라면 상한 간격 조정을 검토하세요.</p>")
+    if comp["over_total"]:
+        cautions += (f"<p>최고 티어 상한을 초과하는 사용자가 <b>{comp['over_total']}명</b> 있습니다 — "
+                     "상한 상향 또는 별도 관리가 필요합니다.</p>")
+    cautions += ("<p>소표본 부서(★)의 비율은 POC 참가 인원이 적어 실제 전사 분포와 다를 수 있습니다. "
+                 "도입 후 실측으로 재조정하세요.</p>")
+    caution_toggle = _toggle("티어 분배 해석 시 주의사항", cautions)
+
+    return method + chip_box + summary + table + caution_toggle
+
+
+def _tier_stacked_bar(pcts: list, colors: list, tdefs: list,
+                      height: int = 20, show_label: bool = False) -> str:
+    """티어 비율을 가로 스택 막대(CSS)로 렌더. 한글 폰트 문제 없음(브라우저 렌더)."""
+    segs = ""
+    for i, p in enumerate(pcts):
+        if p <= 0:
+            continue
+        label = (f'{tdefs[i].name} {p:.0f}%' if show_label and p >= 8
+                 else (f'{p:.0f}%' if p >= 8 else ""))
+        segs += (
+            f'<div style="width:{p:.2f}%;background:{colors[i]};color:#fff;'
+            f'font-size:10px;line-height:{height}px;text-align:center;overflow:hidden;'
+            f'white-space:nowrap" title="{tdefs[i].name}: {p:.0f}%">{label}</div>')
+    return (f'<div style="display:flex;height:{height}px;border-radius:4px;overflow:hidden;'
+            f'border:1px solid #ddd">{segs}</div>')
+
+
 def generate(report: ForecastReport, path: str):
     usd = report.credit_to_usd
     unit = "USD" if usd != 1.0 else "크레딧"
@@ -1011,6 +1135,9 @@ def generate(report: ForecastReport, path: str):
         role_scenarios=report.role_scenarios or None,
     )
 
+    # --- 부서별 티어 분배 섹션 ---
+    tier_section_html = _build_tier_section(report)
+
     # --- Step-by-Step 유도 과정 ---
     steps_html = _build_steps(
         report, fit, usd, unit, step_stats, modr, aggr, has_mc,
@@ -1039,6 +1166,13 @@ def generate(report: ForecastReport, path: str):
 <tr><td>전사 인원</td><td>{report.enterprise_users:,}명</td>
     <td>확대 대상 모집단</td></tr>
 </table>"""
+
+    tier_section_block = (f"""
+  <!-- ══ 부서별 티어 분배 권장 ══════════════════════════════════════ -->
+  <section id="tiers">
+    <h2>부서별 티어 분배 권장</h2>
+    {tier_section_html}
+  </section>""" if tier_section_html else "")
 
     # --- 전체 HTML 조합 ---
     html = f"""<!DOCTYPE html>
@@ -1076,6 +1210,8 @@ def generate(report: ForecastReport, path: str):
     {_plain("위 단계별 분석을 종합한 <b>예산 권장안</b>입니다. 단일 숫자가 아닌 <b>범위</b>로 제시하며, 각 범위의 근거와 신뢰 수준을 함께 명시합니다.")}
     {conclusion_html}
   </section>
+
+  {tier_section_block}
 
   <!-- ══ 부록 A: 서비스별 사용 ══════════════════════════════════════ -->
   <section id="services">

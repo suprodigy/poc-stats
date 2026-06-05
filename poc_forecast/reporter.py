@@ -191,6 +191,47 @@ def print_report(report: ForecastReport, verbose: bool = False):
             headers=["편향 계수", "사용자당 월P75", "전체 월P75 (Moderate)"],
             tablefmt="simple", disable_numparse=True,
         ))
+
+    # ── Section 7: 부서별 티어 분배 권장 ─────────────────
+    if report.tier_allocations and report.tier_company:
+        comp = report.tier_company
+        tdefs = report.tier_defs
+        n_t = len(tdefs)
+        print(f"\n[7] 부서별 티어 분배 권장 (편향보정 ÷{report.bias_factor}x · 평균 사용량 기준)")
+        print("-" * 68)
+        cap_str = " / ".join(f"{t.name} ${t.monthly_usd:,.0f}" for t in tdefs)
+        cr_rate = report.credit_to_usd
+        print(f"  티어 상한: {cap_str}  (1cr=${cr_rate:g})")
+        mix_str = " / ".join(f"{tdefs[i].name} {comp['tier_pcts'][i]:.0f}%" for i in range(n_t))
+        print(f"  ── 전사 합산 믹스: {mix_str}")
+        util = comp["avg_expected_usd"] / comp["avg_committed_usd"] if comp["avg_committed_usd"] else 0
+        print(f"     1인당 평균 실사용 ${comp['avg_expected_usd']:,.0f}/월 · "
+              f"평균 배정 상한 ${comp['avg_committed_usd']:,.0f}/월 · 활용률 {util:.0%}")
+        if comp["flat_top_usd"] > 0:
+            save = 1 - comp["avg_committed_usd"] / comp["flat_top_usd"]
+            print(f"     전원 최고티어(${comp['flat_top_usd']:,.0f}) 대비 천장 절감 {save:.0%}")
+
+        tier_headers = [t.name + "%" for t in tdefs]
+        rows = []
+        for a in report.tier_allocations:
+            mark = "★" if a.n_users < 5 else ""
+            rows.append(
+                [f"{mark}{a.department}", a.n_users]
+                + [f"{a.tier_pcts[i]:.0f}" for i in range(n_t)]
+                + [f"${a.avg_monthly_usd:,.0f}", f"${a.committed_per_user_usd:,.0f}"]
+            )
+        print(tabulate(
+            rows,
+            headers=["부서", "인원"] + tier_headers + ["평균사용$", "배정상한$"],
+            tablefmt="simple", disable_numparse=True,
+        ))
+        if n_t >= 3 and abs(tdefs[2].monthly_usd - tdefs[1].monthly_usd) < tdefs[1].monthly_usd:
+            print(f"  * {tdefs[1].name}(${tdefs[1].monthly_usd:,.0f})·{tdefs[2].name}(${tdefs[2].monthly_usd:,.0f})는 "
+                  f"상한이 근접해 {tdefs[2].name} 배정이 적습니다.")
+        print("  * ★ = 인원 5명 미만 부서 (표본이 작아 비율 변동이 큼)")
+        if comp["over_total"]:
+            print(f"  * 최고 티어 상한 초과 {comp['over_total']}명 — 상한 상향 또는 별도 관리 필요")
+
     print()
 
 

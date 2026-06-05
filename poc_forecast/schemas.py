@@ -101,6 +101,25 @@ class RoleScenarioResult:
 
 
 @dataclass
+class TierDef:
+    name: str
+    monthly_usd: float
+    credit_cap: float        # monthly_usd / credit_to_usd
+
+
+@dataclass
+class DepartmentTierAllocation:
+    department: str
+    division: str
+    n_users: int
+    tier_counts: list               # [n_t1, n_t2, ...]
+    tier_pcts: list                 # [% ...]
+    avg_monthly_usd: float          # 편향보정 평균 실사용 $/월·인
+    committed_per_user_usd: float   # 1인당 평균 상한(천장) $/월
+    over_count: int = 0
+
+
+@dataclass
 class ForecastReport:
     poc_period_days: int
     poc_start: str
@@ -120,3 +139,6 @@ class ForecastReport:
     sensitivity: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     role_scenarios: list = field(default_factory=list)
+    tier_defs: list = field(default_factory=list)
+    tier_allocations: list = field(default_factory=list)
+    tier_company: Optional[dict] = None

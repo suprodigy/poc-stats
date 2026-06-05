@@ -165,7 +165,6 @@ def main():
         segment_stats=segment_stats,
         enterprise_users=args.enterprise_users,
         bias_factor=args.bias_factor,
-        credit_to_usd=args.credit_to_usd,
         scenario_keys=scenario_keys,
         apply_ramp=not args.no_ramp,
     )

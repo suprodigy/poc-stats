@@ -20,7 +20,6 @@ def compute_role_scenarios(
     segment_stats: list,
     enterprise_users: int,
     bias_factor: float,
-    credit_to_usd: float,
     scenario_keys: list,
     apply_ramp: bool = True,
 ) -> list:
@@ -38,7 +37,7 @@ def compute_role_scenarios(
     def cost(seg, pct):
         if seg is None:
             return 0.0
-        return getattr(seg, f"monthly_credit_per_user_p{pct}", 0.0) * credit_to_usd
+        return getattr(seg, f"monthly_credit_per_user_p{pct}", 0.0)
 
     results = []
     for key in scenario_keys:

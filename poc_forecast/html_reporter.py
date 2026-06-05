@@ -529,14 +529,28 @@ def _build_steps(
 
 
 def _build_exec_summary(cons, modr, aggr, usd: float, unit: str,
-                        poc_users: int, poc_days: int, fit) -> str:
+                        poc_users: int, poc_days: int, fit,
+                        role_modr=None) -> str:
     if not (modr and aggr):
         return ""
-    rec_lo = _fmt(modr.monthly_p50, usd)
-    rec_hi = _fmt(modr.monthly_p75, usd)
-    high_m = _fmt(aggr.monthly_p95, usd)
-    rec_lo_a = _fmt(modr.annual_p50, usd)
-    rec_hi_a = _fmt(modr.annual_p75, usd)
+
+    # 예산 기준: 역할 기반 P75(가용 시) > 기존 P75
+    if role_modr:
+        budget_val  = role_modr.monthly_p75
+        expected_val = role_modr.monthly_p50
+        annual_budget = role_modr.annual_p75
+        method_note = "역할 기반 세그먼트 예측 · POC 실측 분포 직접 적용"
+    else:
+        budget_val   = modr.monthly_p75
+        expected_val = modr.monthly_p50
+        annual_budget = modr.annual_p75
+        method_note = "로그정규 분포 추정 · 95% 부트스트랩 CI"
+
+    budget   = _fmt(budget_val, usd)
+    expected = _fmt(expected_val, usd)
+    annual_b = _fmt(annual_budget, usd)
+    worst    = _fmt(aggr.monthly_p95, usd)
+
     fit_label = "로그정규 분포 적합 양호" if fit.fit_quality == "good" else \
                 "로그정규 분포 적합 보통 (경험적 백분위 사용)" if fit.fit_quality == "marginal" else \
                 "분포 적합 불량 (경험적 백분위 사용)"
@@ -544,28 +558,47 @@ def _build_exec_summary(cons, modr, aggr, usd: float, unit: str,
     return f"""
 <div class="exec-summ">
   <h2>📊 핵심 결론 — 이것만 기억하세요</h2>
+
+  <div style="text-align:center;padding:16px 0 10px">
+    <div style="font-size:13px;color:#7f8c8d;margin-bottom:4px">▼ 월간 예산 기준 (채택률 45% · P75)</div>
+    <div style="font-size:42px;font-weight:900;color:#2c3e50;letter-spacing:-1px">{budget} {unit}</div>
+    <div style="font-size:12px;color:#95a5a6;margin-top:2px">{method_note}</div>
+  </div>
+
+  <div style="display:flex;gap:12px;margin:12px 0;text-align:center">
+    <div style="flex:1;background:#eafaf1;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#27ae60;font-weight:700">기대 비용 (P50)</div>
+      <div style="font-size:20px;font-weight:700;color:#27ae60">{expected}</div>
+      <div style="font-size:10px;color:#7f8c8d">월간 중앙값</div>
+    </div>
+    <div style="flex:1;background:#fef9e7;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#f39c12;font-weight:700">예산 기준 (P75)</div>
+      <div style="font-size:20px;font-weight:700;color:#f39c12">{budget}</div>
+      <div style="font-size:10px;color:#7f8c8d">월간 예산 요청액</div>
+    </div>
+    <div style="flex:1;background:#fdedec;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#e74c3c;font-weight:700">최대 대비 (P95)</div>
+      <div style="font-size:20px;font-weight:700;color:#e74c3c">{worst}</div>
+      <div style="font-size:10px;color:#7f8c8d">Aggressive 70%</div>
+    </div>
+  </div>
+
   <div class="find">
     <span class="icon">①</span>
-    <span>POC 참가자 <strong>{poc_users}명</strong>의 <strong>{poc_days}일</strong> 실측 데이터를 분석한 결과,
-    사용량은 소수 헤비유저가 대부분을 차지하는 <strong>롱테일 분포</strong>를 따릅니다.
-    단순 평균이 아닌 <strong>통계적 분포 모델</strong>로 전사 비용을 추정했습니다.</span>
+    <span>POC {poc_users}명 · {poc_days}일 실측 데이터를 Heavy/Medium/Light 세그먼트로 분류하고,
+    bias 보정 후 전사 채택 인원에 적용해 비용을 계산했습니다.</span>
   </div>
   <div class="find">
     <span class="icon">②</span>
-    <span>전사 도입 시 <strong>월간 권장 예산은 {rec_lo} ~ {rec_hi} {unit}</strong> (채택률 45%, 대표값~예산버퍼 기준).
-    연간으로는 도입 초기 램프업을 포함해 <strong>{rec_lo_a} ~ {rec_hi_a} {unit}</strong> 수준입니다.</span>
-  </div>
-  <div class="find">
-    <span class="icon">③</span>
-    <span>급격한 전사 확산 시나리오(채택률 70%, P95 기준) 최대 <strong>{high_m} {unit}/월</strong>까지 감당할
-    여력을 별도로 확보하는 것을 권장합니다.</span>
+    <span>채택률 45% 가정 시 <strong>월 예산 {budget} {unit}</strong>을 요청하세요.
+    연간(램프업 포함)으로는 <strong>{annual_b} {unit}</strong> 수준입니다.</span>
   </div>
   <div class="rec-line">
-    📌 권장: 월 <strong>{rec_lo} ~ {rec_hi} {unit}</strong>으로 예산을 편성하고,
-    최대 <strong>{high_m} {unit}</strong>까지 대비하십시오.
+    📌 예산 요청액: 월 <strong>{budget} {unit}</strong> (연간 {annual_b} {unit}) —
+    채택률 70%·P95 기준 최대 <strong>{worst} {unit}/월</strong>까지 긴급 예비비 확보 권장.
   </div>
   <div class="cred">
-    신뢰도 근거: {poc_users}명 {poc_days}일 실측 · {fit_label} · 95% 부트스트랩 신뢰구간 포함
+    신뢰도 근거: {poc_users}명 {poc_days}일 실측 · {fit_label} · {method_note}
   </div>
 </div>"""
 
@@ -853,9 +886,12 @@ def generate(report: ForecastReport, path: str):
 </p>"""
 
     # --- Executive Summary ---
+    role_modr = next((r for r in report.role_scenarios if r.name == "Moderate"), None) \
+        if report.role_scenarios else None
     exec_summary_html = _build_exec_summary(
         cons, modr, aggr, usd, unit,
         report.poc_users, report.poc_period_days, fit,
+        role_modr=role_modr,
     )
 
     # --- 도입부: 보고서 읽는 법 ---

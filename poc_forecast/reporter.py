@@ -83,44 +83,13 @@ def print_report(report: ForecastReport, verbose: bool = False):
     print(f"  Step 6. 연간 비용 = 월 비용 × {RAMP_SUM:.2f}")
     print(f"          (램프업: 1-2월 30%, 3-4월 60%, 5-6월 80%, 7-12월 100%)")
 
-    # ── Section 4: 비용 예측 ────────────────────────────
-    print("\n[4] 전사 도입 비용 예측")
-    print("-" * 68)
-    if report.scenarios:
-        header = [""] + [f"{s.name}\n({s.adoption_rate:.0%}, {s.active_users:,}명)" for s in report.scenarios]
-        rows = []
-        rows.append(["── 월간 ──"] + [""] * len(report.scenarios))
-        has_mc = any(s.mc_ci_p50_lower is not None for s in report.scenarios)
-        ci_label = "  95% CI (MC)" if has_mc else "  95% CI"
-
-        def _pick_ci(s, mc_lo, mc_hi, boot_lo, boot_hi):
-            if mc_lo is not None:
-                return _ci(mc_lo, mc_hi, usd)
-            return _ci(boot_lo, boot_hi, usd)
-
-        rows.append(["P50"] + [_fmt(s.monthly_p50, usd) for s in report.scenarios])
-        rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p50_lower, s.mc_ci_p50_upper, s.ci_p50_lower, s.ci_p50_upper) for s in report.scenarios])
-        rows.append(["P75"] + [_fmt(s.monthly_p75, usd) for s in report.scenarios])
-        rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p75_lower, s.mc_ci_p75_upper, s.ci_p75_lower, s.ci_p75_upper) for s in report.scenarios])
-        rows.append(["P95"] + [_fmt(s.monthly_p95, usd) for s in report.scenarios])
-        rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p95_lower, s.mc_ci_p95_upper, s.ci_p95_lower, s.ci_p95_upper) for s in report.scenarios])
-        rows.append(["── 연간 (램프업 포함) ──"] + [""] * len(report.scenarios))
-        rows.append(["P50"] + [_fmt(s.annual_p50, usd) for s in report.scenarios])
-        rows.append(["P75"] + [_fmt(s.annual_p75, usd) for s in report.scenarios])
-        rows.append(["P95"] + [_fmt(s.annual_p95, usd) for s in report.scenarios])
-        print(tabulate(rows, headers=header, tablefmt="simple", disable_numparse=True))
-        dist_label = "분포 기반" if report.scenarios[0].used_dist_fit else "경험적"
-        ci_src = "Monte Carlo (bias·채택률 불확실성 포함)" if has_mc else "Bootstrap (표본 추정 오차)"
-        print(f"  단위: {unit}  |  백분위수 소스: {dist_label}  |  CI 방법: {ci_src}")
-        print("  * 용어: P50=중앙값(절반이 이 이하), P75=상위25%선(예산 기준), P95=상위5%선(최악 대비)")
-        print("  * 95% CI=참값이 95% 확률로 들어가는 범위 (표본 한계로 인한 불확실성)")
-
-    # ── Section 5: 역할 기반 자동 추론 예측 ─────────────
+    # ── Section 4: 역할 기반 비용 예측 (권장) or 로그정규 fallback ──
     if report.role_scenarios:
-        print("\n[5] 역할 기반 자동 추론 예측 (세그먼트 비율 × 인원)")
+        # ── [4] 역할 기반 (PRIMARY) ─────────────────────────
+        print("\n[4] 역할 기반 비용 예측  ★ (Executive Summary 예산 기준)")
         print("-" * 68)
         rs = report.role_scenarios[0]
-        print(f"  POC 세그먼트 비율 → bias({report.bias_factor}x) 보정 후:")
+        print(f"  bias({report.bias_factor}x) 보정 후 세그먼트 비율:")
         print(f"    Heavy {rs.adj_heavy_ratio:.1%}  /  Medium {rs.adj_medium_ratio:.1%}  /  Light {rs.adj_light_ratio:.1%}")
         role_rows = [[
             r.name,
@@ -132,17 +101,85 @@ def print_report(report: ForecastReport, verbose: bool = False):
             _fmt(r.monthly_p75, usd),
             _fmt(r.monthly_p95, usd),
             _fmt(r.annual_p50, usd),
+            _fmt(r.annual_p75, usd),
         ] for r in report.role_scenarios]
         print(tabulate(
             role_rows,
-            headers=["시나리오", "채택률", "Heavy", "Medium", "Light", "월P50", "월P75", "월P95", "연P50(램프)"],
+            headers=["시나리오", "채택률", "Heavy", "Medium", "Light",
+                     "월P50", "월P75★", "월P95", "연P50(램프)", "연P75(램프)"],
             tablefmt="simple", disable_numparse=True,
         ))
-        print("  * P50~P95 범위는 같은 채택률 가정 하에 POC 내 분산만 반영 (기존 CI보다 좁음)")
+        print(f"  ★ 권장 예산 기준: Moderate 월P75 = {_fmt(next(r.monthly_p75 for r in report.role_scenarios if r.name=='Moderate'), usd)} {unit}")
+        print("  * P50~P95: 같은 채택률 내 POC 세그먼트 분산 반영 (CI보다 좁음 — 채택률 불확실성 별도)")
+
+        # ── [5] 로그정규 (검증용) ────────────────────────────
+        if report.scenarios:
+            print("\n[5] 로그정규 분포 예측 (검증용 — Bootstrap CI 포함)")
+            print("-" * 68)
+            print("  참고: CI 범위가 넓어 예산 편성보다 불확실성 파악에 활용하세요.")
+            header = [""] + [f"{s.name}\n({s.adoption_rate:.0%}, {s.active_users:,}명)"
+                             for s in report.scenarios]
+            rows = []
+            rows.append(["── 월간 ──"] + [""] * len(report.scenarios))
+            has_mc = any(s.mc_ci_p50_lower is not None for s in report.scenarios)
+            ci_label = "  95% CI (MC)" if has_mc else "  95% CI"
+
+            def _pick_ci(s, mc_lo, mc_hi, boot_lo, boot_hi):
+                if mc_lo is not None:
+                    return _ci(mc_lo, mc_hi, usd)
+                return _ci(boot_lo, boot_hi, usd)
+
+            rows.append(["P50"] + [_fmt(s.monthly_p50, usd) for s in report.scenarios])
+            rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p50_lower, s.mc_ci_p50_upper, s.ci_p50_lower, s.ci_p50_upper) for s in report.scenarios])
+            rows.append(["P75"] + [_fmt(s.monthly_p75, usd) for s in report.scenarios])
+            rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p75_lower, s.mc_ci_p75_upper, s.ci_p75_lower, s.ci_p75_upper) for s in report.scenarios])
+            rows.append(["P95"] + [_fmt(s.monthly_p95, usd) for s in report.scenarios])
+            rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p95_lower, s.mc_ci_p95_upper, s.ci_p95_lower, s.ci_p95_upper) for s in report.scenarios])
+            rows.append(["── 연간 (램프업 포함) ──"] + [""] * len(report.scenarios))
+            rows.append(["P50"] + [_fmt(s.annual_p50, usd) for s in report.scenarios])
+            rows.append(["P75"] + [_fmt(s.annual_p75, usd) for s in report.scenarios])
+            rows.append(["P95"] + [_fmt(s.annual_p95, usd) for s in report.scenarios])
+            print(tabulate(rows, headers=header, tablefmt="simple", disable_numparse=True))
+            dist_label = "분포 기반" if report.scenarios[0].used_dist_fit else "경험적"
+            ci_src = "Monte Carlo (bias·채택률 불확실성 포함)" if has_mc else "Bootstrap (표본 추정 오차)"
+            print(f"  단위: {unit}  |  백분위수 소스: {dist_label}  |  CI 방법: {ci_src}")
+
+    else:
+        # role_scenarios 없을 때 로그정규를 [4]로
+        print("\n[4] 전사 도입 비용 예측")
+        print("-" * 68)
+        if report.scenarios:
+            header = [""] + [f"{s.name}\n({s.adoption_rate:.0%}, {s.active_users:,}명)" for s in report.scenarios]
+            rows = []
+            rows.append(["── 월간 ──"] + [""] * len(report.scenarios))
+            has_mc = any(s.mc_ci_p50_lower is not None for s in report.scenarios)
+            ci_label = "  95% CI (MC)" if has_mc else "  95% CI"
+
+            def _pick_ci(s, mc_lo, mc_hi, boot_lo, boot_hi):
+                if mc_lo is not None:
+                    return _ci(mc_lo, mc_hi, usd)
+                return _ci(boot_lo, boot_hi, usd)
+
+            rows.append(["P50"] + [_fmt(s.monthly_p50, usd) for s in report.scenarios])
+            rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p50_lower, s.mc_ci_p50_upper, s.ci_p50_lower, s.ci_p50_upper) for s in report.scenarios])
+            rows.append(["P75"] + [_fmt(s.monthly_p75, usd) for s in report.scenarios])
+            rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p75_lower, s.mc_ci_p75_upper, s.ci_p75_lower, s.ci_p75_upper) for s in report.scenarios])
+            rows.append(["P95"] + [_fmt(s.monthly_p95, usd) for s in report.scenarios])
+            rows.append([ci_label] + [_pick_ci(s, s.mc_ci_p95_lower, s.mc_ci_p95_upper, s.ci_p95_lower, s.ci_p95_upper) for s in report.scenarios])
+            rows.append(["── 연간 (램프업 포함) ──"] + [""] * len(report.scenarios))
+            rows.append(["P50"] + [_fmt(s.annual_p50, usd) for s in report.scenarios])
+            rows.append(["P75"] + [_fmt(s.annual_p75, usd) for s in report.scenarios])
+            rows.append(["P95"] + [_fmt(s.annual_p95, usd) for s in report.scenarios])
+            print(tabulate(rows, headers=header, tablefmt="simple", disable_numparse=True))
+            dist_label = "분포 기반" if report.scenarios[0].used_dist_fit else "경험적"
+            ci_src = "Monte Carlo (bias·채택률 불확실성 포함)" if has_mc else "Bootstrap (표본 추정 오차)"
+            print(f"  단위: {unit}  |  백분위수 소스: {dist_label}  |  CI 방법: {ci_src}")
+            print("  * 용어: P50=중앙값(절반이 이 이하), P75=상위25%선(예산 기준), P95=상위5%선(최악 대비)")
+            print("  * 95% CI=참값이 95% 확률로 들어가는 범위 (표본 한계로 인한 불확실성)")
 
     # ── Section 6: 민감도 ───────────────────────────────
     if report.sensitivity:
-        print("\n[6] 편향 계수 민감도 (Moderate, P75 기준)")
+        print("\n[6] 편향 계수 민감도 — 로그정규 방법 기준 Moderate P75")
         print("-" * 55)
         sens_rows = [[
             f"{r['bias_factor']}x",

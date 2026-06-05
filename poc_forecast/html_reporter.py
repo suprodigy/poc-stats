@@ -248,6 +248,7 @@ def _build_steps(
     c1: str, c2: str, c3: str, c4: str, c5: str, c6: str,
     seg_table: str, forecast_table: str, sens_table: str,
     role_table: str = "",
+    role_modr=None,
 ) -> str:
     """원자료 → 기초 통계 → 분포 → 보정 → 전사 확대 → 결론까지의 단계별 유도 과정.
     각 단계 카드 아래에 관련 차트·표·설명을 직접 삽입한다."""
@@ -423,12 +424,22 @@ def _build_steps(
     blocks.append(b)
 
     # ── Step 9: 편향 보정 ────────────────────────────────────────────
+    raw_heavy_pct = (report.segment_stats[0].user_count / report.poc_users
+                     if report.segment_stats else 0.0)
+    if role_modr:
+        step9_result = (
+            f"로그정규: 1인당 P50 {f(corrected_p50)}/월 (÷{bf}x)  ·  "
+            f"역할 기반: Heavy 비율 {role_modr.adj_heavy_ratio:.1%} (POC {raw_heavy_pct:.0%} ÷{bf}x 재정규화)"
+        )
+    else:
+        step9_result = f"일반 직원 1명당 P50 {f(corrected_p50)}"
+
     b = _step(
         9, "POC 선발 편향 보정",
         "POC 참가자는 자발적·열성적 사용자라 일반 직원보다 많이 씁니다. "
-        f"편향 계수 {bf}x로 나눠 일반 직원 수준으로 낮춥니다.",
-        calc=f"보정된 사용자당 P50 = {f(src_p50)} ÷ {bf} = <b>{f(corrected_p50)}</b> {unit}/월",
-        result=f"일반 직원 1명당 P50 {f(corrected_p50)}",
+        f"편향 계수 {bf}x로 두 예측 방법에 각각 적용합니다.",
+        calc=f"보정된 사용자당 P50 = {f(src_p50)} ÷ {bf} = <b>{f(corrected_p50)}</b> {unit}/월 (로그정규 기준)",
+        result=step9_result,
         why="이 계수가 예측의 가장 큰 변수입니다 — 아래 민감도 분석으로 범위를 검증합니다.",
     )
     b += _plain(f"<b>편향 계수</b>는 'POC 참가자가 일반 직원보다 몇 배 더 쓰는가'에 대한 추정값으로, "
@@ -437,6 +448,15 @@ def _build_steps(
         f"녹색 구간(1.5x~4.0x) = 합리적인 범위. 수직 점선 = 현재 설정({bf}x). "
         "곡선이 가파를수록 이 가정에 비용이 민감합니다.")
     b += sens_table
+    if role_modr:
+        b += _toggle("두 방법의 편향 보정 방식 차이",
+            f"<p><strong>로그정규 방법</strong>: 사용자당 P50 값 자체를 bias_factor로 나눕니다. "
+            f"→ 모든 사용자가 {bf}x 덜 쓰는 것으로 일괄 하향 조정 (1인당 {f(src_p50)} → {f(corrected_p50)}/월)</p>"
+            f"<p><strong>역할 기반 방법</strong>: Heavy 사용자 비율을 bias_factor로 낮추고 재정규화합니다. "
+            f"→ POC Heavy 비율 {raw_heavy_pct:.0%} ÷ {bf}x = {raw_heavy_pct/bf:.1%}, 재정규화 후 {role_modr.adj_heavy_ratio:.1%}. "
+            "1인당 사용량 값은 그대로, Heavy 인원 수만 줄어듦.</p>"
+            "<p>두 방법 모두 'POC 참가자 과대 대표' 문제를 보정하지만 적용 지점이 다릅니다. "
+            "역할 기반은 <b>Heavy 사용자 비율</b>을 조정해 전사 구성을 현실에 맞게 반영합니다.</p>")
     if has_mc:
         b += _toggle("Bootstrap CI vs Monte Carlo CI — 무엇이 다른가요?",
             "<p><strong>Bootstrap CI</strong>는 '표본 100명에서 P50/P75/P95를 추정할 때 생기는 오차'만 반영합니다. "
@@ -449,20 +469,59 @@ def _build_steps(
     blocks.append(b)
 
     # ── Step 10: 전사 확대 + 시나리오 ────────────────────────────────
+    if role_modr:
+        seg_h = next((s for s in report.segment_stats if s.name == "Heavy"), None)
+        seg_m = next((s for s in report.segment_stats if s.name == "Medium"), None)
+        seg_l = next((s for s in report.segment_stats if s.name == "Light"), None)
+        step10_calc = (
+            f"역할 기반 Moderate: "
+            f"Heavy {role_modr.heavy_n}명 × {f(seg_h.monthly_credit_per_user_p50 if seg_h else 0)} + "
+            f"Medium {role_modr.medium_n}명 × {f(seg_m.monthly_credit_per_user_p50 if seg_m else 0)} + "
+            f"Light {role_modr.light_n}명 × {f(seg_l.monthly_credit_per_user_p50 if seg_l else 0)} "
+            f"= <b>{f(role_modr.monthly_p50)}</b> {unit}/월"
+        )
+        step10_result = f"역할 기반 Moderate 월P50 <b>{f(role_modr.monthly_p50)}</b>"
+        step10_desc = (
+            f"Heavy/Medium/Light 세그먼트 인원에 각 실측 사용량을 곱해 합산합니다. "
+            f"전사 {report.enterprise_users:,}명 × 채택률별(20%/45%/70%) 세그먼트 비율로 인원을 결정합니다."
+        )
+    else:
+        step10_calc = (
+            f"Moderate: {f(corrected_p50)} × ({report.enterprise_users:,}명 × 45%={active:,}명) "
+            f"= <b>{f(modr.monthly_p50) if modr else '-'}</b> {unit}/월"
+        )
+        step10_result = f"Moderate 월간 P50 {f(modr.monthly_p50) if modr else '-'}"
+        step10_desc = (
+            f"보정된 1명당 값에 전사 {report.enterprise_users:,}명과 채택률을 곱합니다. "
+            "채택률은 Conservative 20% / Moderate 45% / Aggressive 70% 3가지."
+        )
+
     b = _step(
         10, "전사 확대 + 채택률 시나리오",
-        f"보정된 1명당 값에 전사 {report.enterprise_users:,}명과 채택률을 곱합니다. "
-        "채택률은 Conservative 20% / Moderate 45% / Aggressive 70% 3가지.",
-        calc=f"Moderate: {f(corrected_p50)} × ({report.enterprise_users:,}명 × 45%={active:,}명) "
-             f"= <b>{f(modr.monthly_p50) if modr else '-'}</b> {unit}/월",
-        result=f"Moderate 월간 P50 {f(modr.monthly_p50) if modr else '-'}",
-        why="POC 1명의 사용량을 전사 규모 비용으로 확대하는 핵심 단계입니다.",
+        step10_desc,
+        calc=step10_calc,
+        result=step10_result,
+        why="POC 세그먼트별 실측 사용량을 전사 규모 비용으로 확대하는 핵심 단계입니다.",
     )
     b += _chart(c4,
         "막대 = 시나리오별 월간 비용. 같은 시나리오 안에서도 P50→P95로 갈수록 비용이 올라갑니다.")
-    b += forecast_table
     if role_table:
         b += role_table
+        b += _plain(
+            "위 역할 기반 예측이 이 보고서의 <b>예산 기준</b>입니다. "
+            f"Heavy 사용자(~{role_modr.adj_heavy_ratio:.0%})가 전체 비용의 "
+            f"{'약 '}{int(heavy_share)}%를 차지하는 롱테일 구조를 세그먼트별로 명시적으로 반영합니다."
+        )
+        b += _toggle(
+            "로그정규 분포 검증 결과 (참고용) — 역할 기반과 비교",
+            forecast_table +
+            "<p style='font-size:12px;color:#7f8c8d;margin-top:8px'>"
+            "로그정규 방법은 전체 분포 중앙값(Light 사용자가 다수 → P50이 낮음)을 기준으로 확대해 "
+            "Heavy 사용자 기여를 과소평가할 수 있습니다. "
+            "두 방법이 같은 방향을 가리킬수록 예측 신뢰도가 높습니다.</p>"
+        )
+    else:
+        b += forecast_table
         b += _toggle("역할 기반 vs 기존 방법 — 무엇이 다른가요?",
             "<b>기존(로그정규)</b>: 전체 사용자 분포를 로그정규로 fitting → 백분위수 → bias 보정. "
             "Bootstrap CI가 채택률 불확실성과 함께 넓은 범위를 만듭니다.<br>"
@@ -513,13 +572,25 @@ def _build_steps(
     blocks.append(b)
 
     # ── Step N+1: 결론 도출 ───────────────────────────────────────────
+    if role_modr:
+        n1_calc = (
+            f"권장 예산 = 역할 기반 Moderate P75 = <b>{f(role_modr.monthly_p75)}</b> {unit}/월<br>"
+            f"최대 대비 = Aggressive P95 = {f(aggr.monthly_p95) if aggr else '-'} {unit}/월"
+        )
+        n1_result = f"역할 기반 Moderate P75 = <b>{f(role_modr.monthly_p75)}</b>"
+    else:
+        n1_calc = (
+            f"권장 월 예산 = Moderate P50~P75 = "
+            f"<b>{f(modr.monthly_p50) if modr else '-'} ~ {f(modr.monthly_p75) if modr else '-'}</b><br>"
+            f"최대 대비 = Aggressive P95 = {f(aggr.monthly_p95) if aggr else '-'} {unit}/월"
+        )
+        n1_result = "아래 '결론' 섹션의 권장 예산 범위"
+
     b = _step(
-        n + 1, "결론 — 예산 범위 도출",
-        "위 과정을 종합해 단일 숫자가 아닌 <b>방어 가능한 예산 범위</b>로 정리합니다.",
-        calc=f"권장 월 예산 = Moderate P50~P75 = "
-             f"<b>{f(modr.monthly_p50) if modr else '-'} ~ {f(modr.monthly_p75) if modr else '-'}</b><br>"
-             f"최대 대비 = Aggressive P95 = {f(aggr.monthly_p95) if aggr else '-'} {unit}/월",
-        result="아래 '결론' 섹션의 권장 예산 범위",
+        n + 1, "결론 — 예산 도출",
+        "위 과정을 종합해 <b>방어 가능한 단일 예산 기준</b>을 도출합니다.",
+        calc=n1_calc,
+        result=n1_result,
         why="각 단계가 근거를 한 층씩 쌓아 이 결론을 뒷받침합니다.",
     )
     b += _section_link("이 과정을 거쳐 도출된 최종 예산 권장안을 아래 결론 섹션에서 확인하세요.")
@@ -604,18 +675,31 @@ def _build_exec_summary(cons, modr, aggr, usd: float, unit: str,
 
 
 def _build_conclusion(cons, modr, aggr, usd: float, unit: str,
-                      bias_factor: float, poc_users: int, poc_days: int, fit) -> str:
+                      bias_factor: float, poc_users: int, poc_days: int, fit,
+                      role_scenarios=None) -> str:
     if not (cons and modr and aggr):
         return ""
 
-    low_m    = cons.monthly_p50
-    rec_lo   = modr.monthly_p50
-    rec_hi   = modr.monthly_p75
-    high_m   = aggr.monthly_p95
-    low_a    = cons.annual_p50
-    rec_lo_a = modr.annual_p50
-    rec_hi_a = modr.annual_p75
-    high_a   = aggr.annual_p95
+    # 역할 기반 시나리오 추출
+    role_cons = role_modr = role_aggr = None
+    if role_scenarios:
+        for r in role_scenarios:
+            if r.name == "Conservative": role_cons = r
+            elif r.name == "Moderate":   role_modr = r
+            elif r.name == "Aggressive": role_aggr = r
+
+    # 스펙트럼 바 및 권장 범위 — 역할 기반 가용 시 전부 역할 기반 사용
+    low_m  = role_cons.monthly_p50  if role_cons else cons.monthly_p50
+    rec_lo = role_modr.monthly_p50  if role_modr else modr.monthly_p50
+    rec_hi = role_modr.monthly_p75  if role_modr else modr.monthly_p75
+    high_m = role_aggr.monthly_p95  if role_aggr else aggr.monthly_p95
+
+    low_a    = role_cons.annual_p50  if role_cons else cons.annual_p50
+    rec_lo_a = role_modr.annual_p50  if role_modr else modr.annual_p50
+    rec_hi_a = role_modr.annual_p75  if role_modr else modr.annual_p75
+    high_a   = role_aggr.annual_p95  if role_aggr else aggr.annual_p95
+
+    method_note = "(역할 기반)" if role_modr else "(로그정규)"
 
     lo_log = math.log(max(low_m, 1))
     hi_log = math.log(max(high_m, 1))
@@ -648,10 +732,10 @@ def _build_conclusion(cons, modr, aggr, usd: float, unit: str,
       도입이 더디고 사용량이 평이할 때.</div>
   </div>
   <div class="concl-card rec">
-    <div class="ttl">🟡 권장 예산 범위</div>
-    <div class="num">{_fmt(rec_lo, usd)} ~ {_fmt(rec_hi, usd)}<small> /월</small></div>
-    <div class="dsc">연 {_fmt(rec_lo_a, usd)} ~ {_fmt(rec_hi_a, usd)} · Moderate 채택률 45%,
-      P50~P75. <b>실제 편성 권장 구간.</b></div>
+    <div class="ttl">🟡 권장 예산 {method_note} P75</div>
+    <div class="num">{_fmt(rec_hi, usd)}<small> /월</small></div>
+    <div class="dsc">연 {_fmt(rec_hi_a, usd)} · Moderate 채택률 45%, P75.
+      <b>예산 요청 기준액.</b> 기대값(P50) {_fmt(rec_lo, usd)}</div>
   </div>
   <div class="concl-card high">
     <div class="ttl">🔴 최대 리스크 (대비)</div>
@@ -666,23 +750,23 @@ def _build_conclusion(cons, modr, aggr, usd: float, unit: str,
   {markers}
 </div>
 <div style="text-align:center;font-size:11px;color:#95a5a6;margin-bottom:18px">
-  ↑ 월간 비용 스펙트럼 (가로축: 로그 스케일). 주황 구간 = 권장 예산 범위.
+  ↑ 월간 비용 스펙트럼 (가로축: 로그 스케일). 주황 구간 = 권장 예산 기준 (P50~P75).
 </div>
 
 <div class="rec-box">
-  📌 <strong>권장</strong>: 월 예산은 <strong>{_fmt(rec_lo, usd)} ~ {_fmt(rec_hi, usd)} {unit}</strong>
-  (Moderate P50~P75) 범위로 편성하고,
+  📌 <strong>권장</strong>: 월 예산 <strong>{_fmt(rec_hi, usd)} {unit}</strong>
+  {method_note} Moderate P75으로 편성하고,
   급격한 확산에 대비해 <strong>{_fmt(high_m, usd)} {unit}</strong>(Aggressive P95)까지
-  감당할 여력을 확보하는 것을 권장합니다.
+  여력을 확보하세요.
 </div>
 
 <div class="defense">
   <h4>✅ 왜 이 예산 권장안이 합리적인가 — 5가지 근거</h4>
   <ol>
     <li><strong>실측 데이터 기반</strong>: 추정이나 벤치마크가 아닌, 자사 POC {poc_users}명 {poc_days}일의 실제 크레딧 사용 기록에서 출발합니다.</li>
-    <li><strong>보수적 편향 보정</strong>: POC 참가자는 열성적 얼리어답터라 일반 직원보다 더 사용합니다. 편향 계수 {bias_factor}x로 나눠 전사 비용을 상향 방지했습니다.</li>
-    <li><strong>통계적 분포 모델링</strong>: 분포 적합 품질 <strong>{fit_label}</strong> — 이론적으로 검증된 모델로 전사 백분위수를 추정해 신뢰성을 확보했습니다.</li>
-    <li><strong>예산 버퍼 포함</strong>: P50(중앙값)이 아닌 P75(상위 25% 선)까지 권장 범위에 포함해 실제 편성 시 안전마진을 내재화했습니다.</li>
+    <li><strong>보수적 편향 보정</strong>: POC 참가자는 열성적 얼리어답터라 일반 직원보다 더 사용합니다. 편향 계수 {bias_factor}x로 Heavy 사용자 비율을 낮춰 전사 구성을 현실에 맞게 조정했습니다.</li>
+    <li><strong>세그먼트 기반 정확한 계산</strong>: Heavy 사용자(bias 보정 후 ~9%)가 전체 비용의 75%를 차지하는 롱테일 구조를 세그먼트별로 명시적으로 반영했습니다. 로그정규 분포 적합({fit_label})으로 추가 검증.</li>
+    <li><strong>예산 버퍼 포함</strong>: P50(중앙값)이 아닌 P75(상위 25% 선)를 예산 기준으로 삼아 실제 편성 시 안전마진을 내재화했습니다.</li>
     <li><strong>모니터링 권장</strong>: 이 예측은 의사결정의 출발점입니다. 도입 후 실제 채택률과 사용량을 분기별로 측정해 재예측하면 정확도가 계속 개선됩니다.</li>
   </ol>
 </div>
@@ -690,7 +774,7 @@ def _build_conclusion(cons, modr, aggr, usd: float, unit: str,
 <div class="caution">
   <div style="font-weight:700;font-size:13px;color:#2c3e50;margin-bottom:4px">⚠ 예측 해석 시 주의사항</div>
   <ul>
-    <li><strong>편향 계수가 가장 큰 변수입니다.</strong> 1.5x↔4.0x로 바꾸면 예측이 2~3배 출렁입니다 (섹션 3 민감도 분석 참고).
+    <li><strong>편향 계수가 가장 큰 변수입니다.</strong> 1.5x↔4.0x로 바꾸면 예측이 2~3배 출렁입니다 (Step 9 민감도 분석 참고).
         POC 참가자가 일반 직원을 얼마나 대표하는지 조직 특성에 맞게 검증하세요.</li>
     <li><strong>POC 기간이 짧으면 신뢰구간이 넓어집니다.</strong> 표본·기간이 작을수록 불확실성이 커지므로
         가능하면 더 긴 데이터로 재예측하세요.</li>
@@ -924,6 +1008,7 @@ def generate(report: ForecastReport, path: str):
     conclusion_html = _build_conclusion(
         cons, modr, aggr, usd, unit,
         report.bias_factor, report.poc_users, report.poc_period_days, fit,
+        role_scenarios=report.role_scenarios or None,
     )
 
     # --- Step-by-Step 유도 과정 ---
@@ -931,6 +1016,7 @@ def generate(report: ForecastReport, path: str):
         report, fit, usd, unit, step_stats, modr, aggr, has_mc,
         c1, c2, c3, c4, c5, c6,
         seg_table, forecast_table, sens_table, role_table,
+        role_modr=role_modr,
     )
 
     # --- 파라미터 요약표 (부록 B) ---

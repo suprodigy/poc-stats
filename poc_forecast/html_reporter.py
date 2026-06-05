@@ -3,7 +3,6 @@ from datetime import date as _date
 import math
 import numpy as np
 from .schemas import ForecastReport
-from .distribution import describe_fit
 from .scaling import RAMP_MULTIPLIERS, RAMP_SUM
 from .distribution import WORKING_DAYS_PER_MONTH
 from . import visualizer as viz
@@ -243,33 +242,49 @@ def _step(n, title: str, desc: str, calc: str = None,
             f'<div class="d">{desc}</div>{calc_html}{result_html}{why_html}</div></div>')
 
 
-def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
-                 stats: dict, modr, aggr, has_mc: bool) -> str:
-    """원자료 → 기초 통계 → 분포 → 보정 → 전사 확대 → 결론까지의 단계별 유도 과정."""
+def _build_steps(
+    report: ForecastReport, fit, usd: float, unit: str,
+    stats: dict, modr, aggr, has_mc: bool,
+    c1: str, c2: str, c3: str, c4: str, c5: str, c6: str,
+    seg_table: str, forecast_table: str, sens_table: str,
+) -> str:
+    """원자료 → 기초 통계 → 분포 → 보정 → 전사 확대 → 결론까지의 단계별 유도 과정.
+    각 단계 카드 아래에 관련 차트·표·설명을 직접 삽입한다."""
     f = lambda v: _fmt(v, usd)
     quality_kr = {"good": "양호", "marginal": "보통", "poor": "불량"}[fit.fit_quality]
     use_dist = fit.fit_quality == "good"
-    # 예측에 실제 사용된 사용자당 백분위수 (분포 양호 시 분포값, 아니면 경험값)
     src_p50 = fit.p50_dist if use_dist else stats["ex_p50"]
     src_label = "분포 기반" if use_dist else "경험적"
     bf = report.bias_factor
     corrected_p50 = src_p50 / bf
     active = modr.active_users if modr else 0
+    heavy_share = report.segment_stats[0].credit_share_pct if report.segment_stats else 0
 
-    steps = []
+    def _chart(img_b64: str, note: str) -> str:
+        return (f'<div class="chart-wrap">'
+                f'<img src="data:image/png;base64,{img_b64}" alt="">'
+                f'<div class="chart-note">{note}</div></div>')
 
-    # 1. 원자료
-    steps.append(_step(
+    blocks = []
+
+    # ── Step 1: 원자료 수집 ────────────────────────────────────────────
+    b = _step(
         1, "원자료 수집",
         f"POC 참가자 {report.poc_users}명이 {report.poc_period_days}일간 남긴 "
-        "<b>usage_credit</b> 사용 로그를 모두 합산합니다.",
+        "<b>usage_credit</b> 사용 로그를 서비스(usage_type)별로 집계합니다.",
         calc=f"Σ(전체 사용 로그의 usage_credit) = <b>{report.total_poc_credit:,.0f}</b> 크레딧",
         result=f"POC 총 크레딧 {report.total_poc_credit:,.0f} cr",
         why="모든 추정의 출발점은 가정이 아닌 실측 데이터입니다.",
-    ))
+    )
+    b += _chart(c3,
+        "usage_type별 POC 기간 총 크레딧 소비량 (상위 10개). "
+        "비싼 모델에 사용이 몰릴수록 같은 사용량이라도 비용이 커집니다.")
+    b += _plain("GPT-4o·이미지 생성 등 서비스별로 크레딧이 얼마나 소비됐는지 보여줍니다. "
+                "어떤 서비스가 비용을 주도하는지 파악하면 향후 요금제 협상이나 사용 가이드 설계에 활용할 수 있습니다.")
+    blocks.append(b)
 
-    # 2. 사용자별 집계
-    steps.append(_step(
+    # ── Step 2: 사용자별 집계 ──────────────────────────────────────────
+    b = _step(
         2, "사용자별 집계",
         f"로그를 이메일(사용자) 단위로 묶어 {report.poc_users}명 각각의 총 크레딧을 구합니다. "
         "분석 단위는 '개별 로그'가 아니라 '사용자 1명'입니다.",
@@ -277,10 +292,13 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"= <b>{stats['raw_avg_per_user']:,.1f}</b> cr/인 (POC 기간 전체)",
         result=f"사용자별 총 크레딧 {report.poc_users}개 값",
         why="비용은 사용자 수에 비례하므로 사용자 단위로 봐야 전사 확대가 가능합니다.",
-    ))
+    )
+    b += _plain("이 단계에서 분석 단위가 '로그 행'에서 '사람'으로 바뀝니다. "
+                "이후 모든 계산은 사용자 1명이 한 달에 평균 얼마를 쓰는지를 기준으로 진행됩니다.")
+    blocks.append(b)
 
-    # 3. 기초 기술통계 (월 환산 배열 기준)
-    steps.append(_step(
+    # ── Step 3: 기초 기술통계 ─────────────────────────────────────────
+    b = _step(
         3, "기초 기술통계",
         "사용자별 값의 분포를 평균·중앙값·표준편차·범위로 요약합니다. "
         "(아래 숫자는 5단계 월간 환산 기준)",
@@ -289,10 +307,26 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"최소 {f(stats['ex_min'])} · 최대 {f(stats['ex_max'])} (단위: {unit}/월)",
         result=f"평균 {f(stats['ex_mean'])} vs 중앙값 {f(stats['ex_p50'])}",
         why="평균과 중앙값이 크게 다르면 분포가 한쪽으로 치우쳤다는 신호입니다.",
-    ))
+    )
+    b += _chart(c1,
+        "빨간 곡선 = 데이터에 맞춘 로그정규 분포. 수직 점선 = P50/P75/P95 위치. "
+        "곡선이 막대에 잘 겹칠수록 분포 기반 예측의 신뢰도가 높습니다.")
+    b += _plain("히스토그램은 비슷한 사용량을 가진 사람이 몇 명인지 막대로 보여줍니다. "
+                "대부분은 적게 쓰고 소수가 아주 많이 쓰는, 오른쪽으로 긴 꼬리 모양이 전형적입니다.")
+    b += _chart(c2,
+        "왼쪽 = 그룹별 인원 비율, 오른쪽 = 그룹별 크레딧 점유율. "
+        "소수의 Heavy 그룹이 전체 비용의 대부분을 차지합니다.")
+    b += seg_table
+    b += _toggle("왜 소수가 대부분을 쓰나요? (파레토 법칙)",
+        "<p>대부분의 소프트웨어에서 <strong>소수 핵심 사용자가 전체 사용량의 대부분</strong>을 차지합니다 "
+        "(80/20 파레토 법칙). AI 도구도 마찬가지로, 일부가 자동화·반복 작업에 집중적으로 활용합니다.</p>"
+        f"<p>이 회사도 Heavy 그룹(상위 20%)이 전체 크레딧의 "
+        f"<strong>{heavy_share:.0f}%</strong>를 사용했습니다. "
+        "따라서 '평균 사용자'로 비용을 추정하면 이 쏠림을 놓치게 됩니다.</p>")
+    blocks.append(b)
 
-    # 4. 평균의 함정
-    steps.append(_step(
+    # ── Step 4: 평균의 함정 ───────────────────────────────────────────
+    b = _step(
         4, "평균의 함정 발견 — 왜 백분위수인가",
         "평균이 중앙값보다 크게 높고 표준편차가 평균에 육박하면, 소수 헤비유저가 "
         "평균을 끌어올린 <b>우편향(heavy-tail)</b> 분포입니다.",
@@ -301,10 +335,17 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"변동계수 CV = 표준편차 ÷ 평균 = <b>{stats['ex_cv']:.2f}</b>",
         result="평균은 과대평가 → 백분위수(P50/P75/P95) 채택",
         why="평균으로 전사 비용을 곱하면 실제보다 부풀려집니다. 이것이 백분위수를 쓰는 핵심 근거입니다.",
-    ))
+    )
+    b += _toggle("왜 평균이 아니라 중앙값(P50)을 쓰나요?",
+        "<p><strong>평균은 소수의 헤비유저 때문에 부풀려집니다.</strong> 9명이 1을 쓰고 1명이 100을 쓰면 "
+        "평균은 10.9지만, 실제 보통 사람은 1을 씁니다. 중앙값(P50)이 현실을 더 잘 대표합니다.</p>"
+        f"<p>이 회사도 <strong>평균 {stats['ex_mean']:,.0f}</strong> vs <strong>중앙값 {stats['ex_p50']:,.0f}</strong>으로, "
+        f"평균이 중앙값의 약 <strong>{stats['mean_vs_p50']:.1f}배</strong>입니다. "
+        "평균으로 곱하면 전사 비용을 과대평가할 위험이 있어, 본 리포트는 백분위수를 기준으로 삼습니다.</p>")
+    blocks.append(b)
 
-    # 5. 월간 정규화
-    steps.append(_step(
+    # ── Step 5: 월간 정규화 ───────────────────────────────────────────
+    b = _step(
         5, "월간 정규화",
         f"POC는 {report.poc_period_days}일(캘린더 기준)이지만 비용은 '월' 단위로 관리합니다. "
         "실 활동일을 반영해 월 근무일 22일 기준으로 환산합니다.",
@@ -313,10 +354,14 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"사용자별 월 크레딧 = 사용자별 총 크레딧 × {stats['monthly_scale']:.3f}",
         result=f"사용자별 '월 크레딧' 배열 {report.poc_users}개",
         why="기간이 다른 POC들을 공정하게 비교하고 월 예산에 직접 대응시키기 위함입니다.",
-    ))
+    )
+    b += _plain(f"POC가 {report.poc_period_days}일이라도, 실제 사용이 있던 날은 그 중 "
+                f"{report.working_day_ratio:.0%}뿐입니다. 이 비율을 반영해 '월 22 근무일' 기준으로 통일합니다. "
+                "이후 모든 백분위수와 예측은 이 월간 환산값을 기준으로 합니다.")
+    blocks.append(b)
 
-    # 6. 백분위수
-    steps.append(_step(
+    # ── Step 6: 백분위수 산출 ─────────────────────────────────────────
+    b = _step(
         6, "백분위수 산출",
         "월 크레딧을 작은 값부터 정렬해 P50/P75/P95 위치의 값을 읽습니다. "
         "각각 대표값·예산값·최악값에 해당합니다.",
@@ -324,10 +369,18 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"P95(최악) {f(stats['ex_p95'])} &nbsp;<i>(경험적, {unit}/월·사용자당)</i>",
         result=f"사용자 1명당 P50 {f(stats['ex_p50'])}",
         why="단일 평균 대신 3개 지점으로 '보통~최악'의 폭을 함께 봅니다.",
-    ))
+    )
+    b += _example(
+        f"이 회사 POC에서 월 사용량 순위를 매기면 — "
+        f"<b>50번째 사람 ≈ {stats['ex_p50']:,.0f}</b>, <b>75번째 ≈ {stats['ex_p75']:,.0f}</b>, "
+        f"<b>95번째 ≈ {stats['ex_p95']:,.0f} 크레딧</b>이었습니다. "
+        "전사 비용은 이 '사용자 1명당 값'에 편향 보정과 사용자 수를 곱해 계산합니다.")
+    b += _plain("<b>P50·P75·P95</b>는 100명을 사용량 순으로 한 줄로 세웠을 때 몇 번째 사람인지를 뜻합니다. "
+                "P50 = 50번째(중앙값, 보통 사람). P75 = 75번째(예산을 넉넉히 잡을 때). P95 = 95번째(최악 대비).")
+    blocks.append(b)
 
-    # 7. 분포 적합
-    steps.append(_step(
+    # ── Step 7: 분포 적합 ────────────────────────────────────────────
+    b = _step(
         7, "분포 적합 (로그정규)",
         "표본 100명을 넘어선 일반화를 위해 사용량에 로그정규 분포를 적합하고, "
         "KS 검정으로 적합 품질을 객관적으로 평가합니다.",
@@ -339,11 +392,18 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
         why=("KS p>0.05라 분포 적합이 양호 → 분포 기반 백분위수 사용 (표본 외 극단값까지 안정적 추정)"
              if use_dist else
              "KS p<0.05라 적합이 불충분 → 경험적 백분위수 사용 (표본 직접 계산)"),
-    ))
+    )
+    b += _toggle("로그정규분포가 뭔가요? μ·σ·KS검정은?",
+        "<p><strong>로그정규분포</strong>는 '값이 0보다 작아질 수 없고, 한쪽(오른쪽)으로 길게 늘어지는' 데이터에 잘 맞는 분포입니다. "
+        "사용량, 소득, 파일 크기처럼 '대부분은 작고 소수가 매우 큰' 데이터가 여기에 해당합니다.</p>"
+        "<p><strong>μ(뮤)</strong>는 분포의 중심 위치, <strong>σ(시그마)</strong>는 퍼진 정도를 나타냅니다. σ가 클수록 사용자 간 편차가 큽니다.</p>"
+        "<p><strong>KS 검정</strong>은 '실제 데이터가 이 분포 모양과 비슷한가'를 0~1 사이 p값으로 평가합니다. "
+        "<strong>p > 0.05면 이 분포로 봐도 무리 없다</strong>는 뜻이고, 이때 표본을 넘어선 일반화가 더 안전해집니다.</p>")
+    blocks.append(b)
 
-    # 8. 부트스트랩
+    # ── Step 8: 부트스트랩 ────────────────────────────────────────────
     bci = (modr.ci_p50_lower, modr.ci_p50_upper) if modr else (0, 0)
-    steps.append(_step(
+    b = _step(
         8, "표본 불확실성 추정 (부트스트랩)",
         f"표본이 {report.poc_users}명뿐이라 백분위수 자체에 추정 오차가 있습니다. "
         "데이터를 2000회 재추출해 그 오차 범위를 정량화합니다.",
@@ -351,20 +411,44 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"[{f(bci[0])} ~ {f(bci[1])}]",
         result=f"P50 95% CI [{f(bci[0])} ~ {f(bci[1])}]",
         why="'점 추정 하나'가 아니라 '범위'로 표본 한계를 정직하게 드러냅니다.",
-    ))
+    )
+    b += _toggle("신뢰구간(95% CI)과 부트스트랩이란?",
+        "<p>POC 표본은 100명뿐이라 '진짜 전사 값'을 정확히는 알 수 없습니다. "
+        "<strong>95% 신뢰구간(CI)</strong>은 '같은 조사를 여러 번 반복하면 약 95%는 이 범위 안에 들어온다'는 뜻으로, "
+        "숫자 하나가 아닌 '범위'로 불확실성을 정직하게 보여주는 장치입니다.</p>"
+        "<p><strong>부트스트랩</strong>은 가진 데이터에서 무작위로 100명을 2000회 다시 뽑아 매번 값을 계산하고, "
+        "그 결과들이 퍼진 정도로 불확실성을 추정합니다. "
+        "표의 각 P값 아래 <span class='ci'>[ ~ ]</span>가 바로 이 95% 신뢰구간입니다.</p>")
+    blocks.append(b)
 
-    # 9. 편향 보정
-    steps.append(_step(
+    # ── Step 9: 편향 보정 ────────────────────────────────────────────
+    b = _step(
         9, "POC 선발 편향 보정",
         "POC 참가자는 자발적·열성적 사용자라 일반 직원보다 많이 씁니다. "
         f"편향 계수 {bf}x로 나눠 일반 직원 수준으로 낮춥니다.",
         calc=f"보정된 사용자당 P50 = {f(src_p50)} ÷ {bf} = <b>{f(corrected_p50)}</b> {unit}/월",
         result=f"일반 직원 1명당 P50 {f(corrected_p50)}",
-        why="이 계수가 예측의 가장 큰 변수 → 논거 3(민감도)에서 별도 검증합니다.",
-    ))
+        why="이 계수가 예측의 가장 큰 변수입니다 — 아래 민감도 분석으로 범위를 검증합니다.",
+    )
+    b += _plain(f"<b>편향 계수</b>는 'POC 참가자가 일반 직원보다 몇 배 더 쓰는가'에 대한 추정값으로, "
+                "불확실성이 가장 높은 가정입니다. 아래 차트는 이 값을 바꾸면 비용이 어떻게 달라지는지 보여줍니다.")
+    b += _chart(c6,
+        f"녹색 구간(1.5x~4.0x) = 합리적인 범위. 수직 점선 = 현재 설정({bf}x). "
+        "곡선이 가파를수록 이 가정에 비용이 민감합니다.")
+    b += sens_table
+    if has_mc:
+        b += _toggle("Bootstrap CI vs Monte Carlo CI — 무엇이 다른가요?",
+            "<p><strong>Bootstrap CI</strong>는 '표본 100명에서 P50/P75/P95를 추정할 때 생기는 오차'만 반영합니다. "
+            "즉, bias_factor=2.5가 정확하다고 가정하고 사용자 샘플링 오차만 측정합니다.</p>"
+            "<p><strong>Monte Carlo CI</strong>는 여기에 두 가지 불확실성을 추가합니다:<br>"
+            "① <b>bias_factor</b>: 2.5x가 맞는지 확실하지 않으므로 LogNormal 분포로 모델링 (중앙값 2.5, 90% 범위 ≈ 1.4x~4.5x)<br>"
+            "② <b>채택률</b>: 45%가 맞는지 확실하지 않으므로 Beta 분포로 모델링 (중앙 45%, 범위 10~80%)</p>"
+            "<p>결과적으로 Monte Carlo CI는 Bootstrap CI보다 훨씬 넓습니다. "
+            "이것이 '틀린' 것이 아니라 <strong>더 정직한 불확실성 표현</strong>입니다.</p>")
+    blocks.append(b)
 
-    # 10. 전사 확대 + 시나리오
-    steps.append(_step(
+    # ── Step 10: 전사 확대 + 시나리오 ────────────────────────────────
+    b = _step(
         10, "전사 확대 + 채택률 시나리오",
         f"보정된 1명당 값에 전사 {report.enterprise_users:,}명과 채택률을 곱합니다. "
         "채택률은 Conservative 20% / Moderate 45% / Aggressive 70% 3가지.",
@@ -372,11 +456,16 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"= <b>{f(modr.monthly_p50) if modr else '-'}</b> {unit}/월",
         result=f"Moderate 월간 P50 {f(modr.monthly_p50) if modr else '-'}",
         why="POC 1명의 사용량을 전사 규모 비용으로 확대하는 핵심 단계입니다.",
-    ))
+    )
+    b += _chart(c4,
+        "막대 = 시나리오별 월간 비용. 같은 시나리오 안에서도 P50→P95로 갈수록 비용이 올라갑니다.")
+    b += forecast_table
+    blocks.append(b)
 
-    # 11. 몬테카를로 (조건부)
-    if has_mc and modr and modr.mc_ci_p50_lower is not None:
-        steps.append(_step(
+    # ── Step 11: 몬테카를로 (조건부) ─────────────────────────────────
+    has_mc_result = has_mc and modr and modr.mc_ci_p50_lower is not None
+    if has_mc_result:
+        b = _step(
             11, "파라미터 불확실성 (몬테카를로)",
             "편향 계수와 채택률 '자체'도 불확실합니다. 두 값을 분포로 두고 5000회 "
             "시뮬레이션해 더 솔직한 범위를 구합니다.",
@@ -385,11 +474,14 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
                  f"[{f(modr.mc_ci_p50_lower)} ~ {f(modr.mc_ci_p50_upper)}]",
             result=f"MC P50 95% CI [{f(modr.mc_ci_p50_lower)} ~ {f(modr.mc_ci_p50_upper)}]",
             why="8단계(표본 오차)보다 넓어집니다 — 가정의 불확실성까지 더했기 때문입니다.",
-        ))
+        )
+        b += _plain("Monte Carlo는 '우리가 설정한 값(편향 계수 2.5, 채택률 45%) 자체가 틀릴 수 있다'는 가능성까지 반영합니다. "
+                    "부트스트랩 CI보다 훨씬 넓은 범위가 나오는데, 이것이 더 정직한 불확실성 표현입니다.")
+        blocks.append(b)
 
-    # 12. 연간화
-    n = 12 if (has_mc and modr and modr.mc_ci_p50_lower is not None) else 11
-    steps.append(_step(
+    # ── Step 11/12: 연간화 ───────────────────────────────────────────
+    n = 12 if has_mc_result else 11
+    b = _step(
         n, "연간화 (램프업 반영)",
         "전사 도입 첫해는 6개월에 걸쳐 점진적으로 정착합니다. 월 비용에 12개월 "
         "램프업 가중합을 곱해 1년차 비용을 구합니다.",
@@ -398,10 +490,22 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"= <b>{f(modr.annual_p50) if modr else '-'}</b>",
         result=f"Moderate 연간 P50 {f(modr.annual_p50) if modr else '-'}",
         why="첫해는 '월×12'보다 작습니다. 도입 현실을 반영한 보정입니다.",
-    ))
+    )
+    b += _chart(c5,
+        "점선 = 정상 운영(스테디스테이트) 수준. "
+        "회색 배경 = 램프업 구간(1~6월), 파란 배경 = 정상 운영(7~12월).")
+    b += _plain("전사 도입 첫날부터 모든 직원이 한꺼번에 사용하진 않습니다. "
+                "교육·온보딩을 거쳐 <b>약 6개월에 걸쳐 점진적으로 정착</b>하는 현실을 반영했습니다. "
+                "그래서 1년차 비용은 '월 비용 × 12'보다 작습니다.")
+    b += _toggle("램프업 가중치는 어떻게 정했나요?",
+        "<p>일반적인 엔터프라이즈 소프트웨어 도입은 S자 곡선을 그립니다. 본 모델은 "
+        "<strong>1~2개월 30% → 3~4개월 60% → 5~6개월 80% → 7개월 이후 100%</strong>로 단계적 정착을 가정했습니다.</p>"
+        f"<p>12개월 가중치 합 = <strong>{RAMP_SUM:.2f}</strong>이므로, 1년차 연간 비용 = 월 비용 × {RAMP_SUM:.2f}입니다 "
+        "(정착 후 기준 연간은 월 비용 × 12). 도입 속도가 더 빠르다면 가중치를 올려 재계산할 수 있습니다.</p>")
+    blocks.append(b)
 
-    # 13. 결론
-    steps.append(_step(
+    # ── Step N+1: 결론 도출 ───────────────────────────────────────────
+    b = _step(
         n + 1, "결론 — 예산 범위 도출",
         "위 과정을 종합해 단일 숫자가 아닌 <b>방어 가능한 예산 범위</b>로 정리합니다.",
         calc=f"권장 월 예산 = Moderate P50~P75 = "
@@ -409,9 +513,11 @@ def _build_steps(report: ForecastReport, fit, usd: float, unit: str,
              f"최대 대비 = Aggressive P95 = {f(aggr.monthly_p95) if aggr else '-'} {unit}/월",
         result="아래 '결론' 섹션의 권장 예산 범위",
         why="각 단계가 근거를 한 층씩 쌓아 이 결론을 뒷받침합니다.",
-    ))
+    )
+    b += _section_link("이 과정을 거쳐 도출된 최종 예산 권장안을 아래 결론 섹션에서 확인하세요.")
+    blocks.append(b)
 
-    return _SBS_ARROW.join(steps)
+    return _SBS_ARROW.join(blocks)
 
 
 def _build_exec_summary(cons, modr, aggr, usd: float, unit: str,
@@ -580,20 +686,6 @@ def generate(report: ForecastReport, path: str):
         "raw_avg_per_user": raw_avg_per_user, "monthly_scale": monthly_scale,
     }
 
-    # Heavy 그룹 크레딧 점유율
-    heavy_share = report.segment_stats[0].credit_share_pct if report.segment_stats else 0
-
-    # 민감도 비율 (1.5x vs 4.0x)
-    if report.sensitivity and len(report.sensitivity) >= 2:
-        sens_lo = next((r for r in report.sensitivity if r["bias_factor"] == 1.5), None)
-        sens_hi = next((r for r in report.sensitivity if r["bias_factor"] == 4.0), None)
-        if sens_lo and sens_hi and sens_lo["total_monthly_p75"] > 0:
-            sens_ratio = sens_hi["total_monthly_p75"] / sens_lo["total_monthly_p75"]
-        else:
-            sens_ratio = 0
-    else:
-        sens_ratio = 0
-
     # --- 차트 생성 ---
     c1 = viz.chart_user_distribution(monthly_arr, fit)
     c2 = viz.chart_segment_breakdown(report.segment_stats)
@@ -720,68 +812,6 @@ def generate(report: ForecastReport, path: str):
 {sens_rows}
 </table>""" if sens_rows else ""
 
-    # --- 추론 사슬 ---
-    dist_source = "로그정규 분포 기반 백분위수" if fit.fit_quality == "good" else "경험적 백분위수 (표본 직접 계산)"
-    chain_html = f"""
-<div class="chain">
-  <div class="chain-step">
-    <div class="step-num">1</div>
-    <div class="step-body">
-      <div class="title">POC 관측 데이터 수집</div>
-      <div class="desc">{report.poc_users}명 · {report.poc_period_days}일간 크레딧 사용량 집계.
-        월간 환산: <strong>근무일 22일/월</strong>, 실제 활동일 비율 {report.working_day_ratio:.1%} 반영.</div>
-    </div>
-  </div>
-  <div class="chain-step">
-    <div class="step-num">2</div>
-    <div class="step-body">
-      <div class="title">분포 적합 검정</div>
-      <div class="desc">사용자별 월 크레딧에 로그정규 분포 적합.
-        <strong>{describe_fit(fit)}</strong><br>
-        결과: <strong>{dist_source}</strong> 사용.
-        선택 근거: 엔터프라이즈 소프트웨어 사용량은 소수 파워유저가 대부분을 차지하는
-        heavy-tail 특성으로, 로그정규 분포가 경험적으로 잘 맞는다.</div>
-    </div>
-  </div>
-  <div class="chain-step">
-    <div class="step-num">3</div>
-    <div class="step-body">
-      <div class="title">POC 선발 편향 보정</div>
-      <div class="desc">POC 참가자는 자발적·열성적 사용자라 일반 직원보다 더 많이 사용.
-        현재 설정: <strong>편향 계수 {report.bias_factor}x</strong>.
-        타당 범위: 1.5x (POC ≈ 일반 대표) ~ 4.0x (열성 얼리어답터).</div>
-    </div>
-  </div>
-  <div class="chain-step">
-    <div class="step-num">4</div>
-    <div class="step-body">
-      <div class="title">채택률 시나리오 적용</div>
-      <div class="desc">전체 {report.enterprise_users:,}명 중 실제 AI를 사용할 비율:
-        Conservative 20% / Moderate 45% / Aggressive 70%.
-        활성 사용자 수 = 전사 인원 × 채택률.</div>
-    </div>
-  </div>
-  <div class="chain-step">
-    <div class="step-num">5</div>
-    <div class="step-body">
-      <div class="title">월간 비용 산출</div>
-      <div class="desc">월간 비용 = (보정된 사용자당 월 크레딧 Pxx) × 활성 사용자 수.
-        P50 = 중앙값, P75 = 예산 계획용, P95 = 최악 시나리오.
-        각 백분위수에 95% 부트스트랩 신뢰구간 제공.</div>
-    </div>
-  </div>
-  <div class="chain-step">
-    <div class="step-num">6</div>
-    <div class="step-body">
-      <div class="title">연간 비용 및 램프업</div>
-      <div class="desc">전사 도입 후 즉시 정상 운영되지 않음.
-        1~2월 30%, 3~4월 60%, 5~6월 80%, 7~12월 100%.
-        연간 비용 = 월간 비용 × {RAMP_SUM:.2f} (12개월 램프업 가중합).
-        스테디스테이트 기준 연간 = 월간 × 12.</div>
-    </div>
-  </div>
-</div>"""
-
     # --- Executive Summary ---
     exec_summary_html = _build_exec_summary(
         cons, modr, aggr, usd, unit,
@@ -791,20 +821,26 @@ def generate(report: ForecastReport, path: str):
     # --- 도입부: 보고서 읽는 법 ---
     intro_html = """
 <div class="intro">
-  <h3>📋 이 보고서는 아래 순서로 근거를 쌓아 결론을 도출합니다</h3>
+  <h3>📋 이 보고서는 원자료에서 출발해 단계별로 예산 결론을 도출합니다</h3>
   <div style="font-size:12px;color:#7f8c8d;margin-bottom:6px">
-    각 논거 섹션이 결론(권장 예산)의 신뢰성을 한 층씩 뒷받침합니다:
+    각 단계의 <b>녹색 결과값이 다음 단계의 입력</b>으로 이어지며, 단계 아래에 관련 차트와 설명이 함께 제공됩니다:
   </div>
   <div class="flow">
-    <span class="flow-step">결론 먼저</span><span class="flow-arrow">→</span>
-    <span class="flow-step">논거 1: 실측 데이터</span><span class="flow-arrow">→</span>
-    <span class="flow-step">논거 2: 예측 방법론</span><span class="flow-arrow">→</span>
-    <span class="flow-step">논거 3: 신뢰도 검증</span><span class="flow-arrow">→</span>
-    <span class="flow-step">결론 재확인</span>
+    <span class="flow-step">① 원자료 수집</span><span class="flow-arrow">→</span>
+    <span class="flow-step">② 사용자별 집계</span><span class="flow-arrow">→</span>
+    <span class="flow-step">③ 기초 통계</span><span class="flow-arrow">→</span>
+    <span class="flow-step">④ 평균의 함정</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑤ 월간 정규화</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑥ 백분위수</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑦ 분포 적합</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑧ 부트스트랩</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑨ 편향 보정</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑩ 전사 확대</span><span class="flow-arrow">→</span>
+    <span class="flow-step">⑪ 연간화</span><span class="flow-arrow">→</span>
+    <span class="flow-step">결론</span>
   </div>
   <div style="font-size:11.5px;color:#95a5a6;margin-top:10px">
-    💡 파란 박스(쉽게 말하면)는 핵심을 쉬운 말로, 녹색 박스(주장)는 각 섹션이 전달하는 논거를,
-    <b>▶ 더 알아보기</b>는 통계 심화 개념을 설명합니다.
+    💡 파란 박스(쉽게 말하면)는 핵심을 쉬운 말로, <b>▶ 더 알아보기</b>는 통계 심화 개념을 설명합니다.
   </div>
 </div>"""
 
@@ -815,7 +851,11 @@ def generate(report: ForecastReport, path: str):
     )
 
     # --- Step-by-Step 유도 과정 ---
-    steps_html = _build_steps(report, fit, usd, unit, step_stats, modr, aggr, has_mc)
+    steps_html = _build_steps(
+        report, fit, usd, unit, step_stats, modr, aggr, has_mc,
+        c1, c2, c3, c4, c5, c6,
+        seg_table, forecast_table, sens_table,
+    )
 
     # --- 파라미터 요약표 (부록 B) ---
     fit_q_kr = {"good": "양호", "marginal": "보통", "poor": "불량"}[fit.fit_quality]
@@ -862,144 +902,16 @@ def generate(report: ForecastReport, path: str):
   {intro_html}
   {cards_html}
 
-  <!-- ══ 논거 1: 실측 데이터 ══════════════════════════════════════ -->
-  <section id="evidence1">
-    <h2>논거 1 — POC 실측 데이터: 예측의 출발점</h2>
-    {_claim(f"POC {report.poc_users}명의 실측 사용량은 <strong>소수 헤비유저가 대부분을 차지하는 롱테일 분포</strong>를 보입니다. "
-            f"상위 20%(Heavy 그룹)가 전체 크레딧의 <strong>{heavy_share:.0f}%</strong>를 사용했습니다. "
-            "이 불균등한 분포가 비용 예측의 핵심 구조입니다.")}
-    {_plain("히스토그램 = 비슷한 사용량을 가진 사람이 몇 명인지 막대로 표현한 것입니다. 대부분은 적게 쓰고 소수가 아주 많이 쓰는, 한쪽으로 긴 꼬리 모양이 전형적입니다.")}
-    <div class="chart-wrap">
-      <img src="data:image/png;base64,{c1}" alt="사용자 크레딧 분포">
-      <div class="chart-note">
-        빨간 곡선 = 데이터에 맞춘 로그정규 분포. 수직 점선 = P50/P75/P95 위치.
-        곡선이 막대에 잘 겹칠수록 분포 기반 예측의 신뢰도가 높습니다.
-      </div>
-    </div>
-    {_toggle("로그정규분포가 뭔가요? μ·σ·KS검정은?",
-        "<p><strong>로그정규분포</strong>는 '값이 0보다 작아질 수 없고, 한쪽(오른쪽)으로 길게 늘어지는' 데이터에 잘 맞는 분포입니다. "
-        "사용량, 소득, 파일 크기처럼 '대부분은 작고 소수가 매우 큰' 데이터가 여기에 해당합니다.</p>"
-        "<p><strong>μ(뮤)</strong>는 분포의 중심 위치, <strong>σ(시그마)</strong>는 퍼진 정도를 나타냅니다. σ가 클수록 사용자 간 편차가 큽니다.</p>"
-        "<p><strong>KS 검정</strong>은 '실제 데이터가 이 분포 모양과 비슷한가'를 0~1 사이 p값으로 평가합니다. "
-        "<strong>p > 0.05면 이 분포로 봐도 무리 없다</strong>는 뜻이고, 이때 표본을 넘어선 일반화가 더 안전해집니다.</p>")}
-    {_example(f"이 회사 POC에서 사용자별 월 사용량은 <b>절반(P50)이 {ex_p50:,.0f} 크레딧 이하</b>, "
-        f"<b>상위 5%(P95)는 {ex_p95:,.0f} 크레딧 이상</b>을 썼습니다. "
-        f"가장 많이 쓴 사람은 약 {ex_max:,.0f} 크레딧으로, 전형적인 롱테일 모양입니다.")}
-
-    <div class="chart-wrap" style="margin-top:20px">
-      <img src="data:image/png;base64,{c2}" alt="사용자 세분화">
-      <div class="chart-note">
-        왼쪽 = 그룹별 인원 비율, 오른쪽 = 그룹별 크레딧 점유율.
-        소수의 Heavy 그룹이 전체 비용의 대부분을 차지합니다.
-      </div>
-    </div>
-    {seg_table}
-    {_toggle("왜 소수가 대부분을 쓰나요? (파레토 법칙)",
-        "<p>대부분의 소프트웨어에서 <strong>소수 핵심 사용자가 전체 사용량의 대부분</strong>을 차지합니다 "
-        "(80/20 파레토 법칙). AI 도구도 마찬가지로, 일부가 자동화·반복 작업에 집중적으로 활용합니다.</p>"
-        f"<p>이 회사도 Heavy 그룹(상위 20%)이 전체 크레딧의 "
-        f"<strong>{heavy_share:.0f}%</strong>를 사용했습니다. "
-        "따라서 '평균 사용자'로 비용을 추정하면 이 쏠림을 놓치게 되어, 백분위수 기반 접근이 필요합니다.</p>")}
-
-    {_impl("소수 Heavy 사용자가 비용을 주도하므로, 단순 평균이 아닌 백분위수(P50/P75/P95) 기반 예측이 필요합니다. 다음 섹션에서 이 방법론이 어떻게 전사 규모 비용으로 이어지는지 설명합니다.")}
-    {_section_link("이 사용 패턴을 전사로 확대하는 예측 방법론을 다음 섹션에서 확인하세요.")}
-  </section>
-
-  <!-- ══ 논거 2: 예측 방법론 ════════════════════════════════════════ -->
-  <section id="evidence2">
-    <h2>논거 2 — 과학적 방법론: 3단계 보정으로 전사 비용 추정</h2>
-    {_claim(f"POC 데이터를 전사로 확대할 때 <strong>3가지 핵심 보정</strong>(① 분포 모델링, ② 편향 보정 {report.bias_factor}x, ③ 채택률 시나리오)을 적용해 "
-            "과대·과소 추정 위험을 최소화했습니다. 각 보정의 근거는 아래 6단계 추론 사슬에서 확인할 수 있습니다.")}
-    {chain_html}
-
-    {_plain("여기서 <b>P50·P75·P95</b>가 핵심입니다. 백분위수란 '100명을 사용량 순으로 한 줄로 세웠을 때 몇 번째 사람인가'를 뜻합니다. "
-        "P50 = 50번째(중앙값, 보통 사람). P75 = 75번째(예산을 넉넉히 잡을 때). P95 = 95번째(최악 대비).")}
-    {_example(f"이 회사 POC에서 월 사용량 순위를 매기면 — "
-        f"<b>50번째 사람 ≈ {ex_p50:,.0f}</b>, <b>75번째 ≈ {ex_p75:,.0f}</b>, "
-        f"<b>95번째 ≈ {ex_p95:,.0f} 크레딧</b>이었습니다. "
-        "전사 비용은 이 '사용자 1명당 값'에 편향 보정과 사용자 수를 곱해 계산합니다.")}
-    <div class="chart-wrap">
-      <img src="data:image/png;base64,{c4}" alt="시나리오별 비용">
-      <div class="chart-note">
-        막대 = 시나리오별 월간 비용. 같은 시나리오 안에서도 P50→P95로 갈수록 비용이 올라갑니다.
-      </div>
-    </div>
-    {forecast_table}
-    {_toggle("왜 평균이 아니라 중앙값(P50)을 쓰나요?",
-        "<p><strong>평균은 소수의 헤비유저 때문에 부풀려집니다.</strong> 9명이 1을 쓰고 1명이 100을 쓰면 "
-        "평균은 10.9지만, 실제 보통 사람은 1을 씁니다. 중앙값(P50)이 현실을 더 잘 대표합니다.</p>"
-        f"<p>이 회사도 <strong>평균 {ex_mean:,.0f}</strong> vs <strong>중앙값 {ex_p50:,.0f}</strong>으로, "
-        f"평균이 중앙값의 약 <strong>{mean_vs_p50:.1f}배</strong>입니다. "
-        "평균으로 곱하면 전사 비용을 과대평가할 위험이 있어, 본 리포트는 백분위수를 기준으로 삼습니다.</p>")}
-    {_toggle("신뢰구간(95% CI)과 부트스트랩이란?",
-        "<p>POC 표본은 100명뿐이라 '진짜 전사 값'을 정확히는 알 수 없습니다. "
-        "<strong>95% 신뢰구간(CI)</strong>은 '같은 조사를 여러 번 반복하면 약 95%는 이 범위 안에 들어온다'는 뜻으로, "
-        "숫자 하나가 아닌 '범위'로 불확실성을 정직하게 보여주는 장치입니다.</p>"
-        "<p><strong>부트스트랩</strong>은 가진 데이터에서 무작위로 100명을 2000회 다시 뽑아 매번 값을 계산하고, "
-        "그 결과들이 퍼진 정도로 불확실성을 추정합니다. "
-        "표의 각 P값 아래 <span class='ci'>[ ~ ]</span>가 바로 이 95% 신뢰구간입니다.</p>")}
-
-    {_impl("세 시나리오 중 <strong>Moderate(채택률 45%)</strong>가 일반적인 엔터프라이즈 소프트웨어 도입에서 가장 현실적인 기준점입니다. 다음 섹션에서 이 예측값이 얼마나 믿을 수 있는지 검증합니다.")}
-    {_section_link("이 예측값의 신뢰도와 민감도 분석을 다음 섹션에서 확인하세요.")}
-  </section>
-
-  <!-- ══ 논거 3: 신뢰도 검증 ════════════════════════════════════════ -->
-  <section id="evidence3">
-    <h2>논거 3 — 신뢰도 검증: 예측의 불확실성과 한계</h2>
-    {_claim(f"이 예측에서 <strong>가장 큰 불확실성은 편향 계수({report.bias_factor}x)</strong>입니다. "
-            + (f"민감도 분석에 따르면 1.5x~4.0x 구간에서 비용이 최대 <strong>{sens_ratio:.1f}배</strong> 변동합니다. " if sens_ratio > 0 else "")
-            + f"현재 설정 {report.bias_factor}x는 POC 참가자가 자발적 얼리어답터임을 감안한 합리적 추정값이나, "
-            "조직 특성에 맞게 검증이 필요합니다.")}
-    {_plain(f"<b>편향 계수</b>는 'POC 참가자가 일반 직원보다 몇 배 더 쓰는가'에 대한 추정값으로, 불확실성이 가장 높은 가정입니다. 아래 차트는 이 값을 바꾸면 비용이 어떻게 달라지는지 보여줍니다.")}
-    <div class="chart-wrap">
-      <img src="data:image/png;base64,{c6}" alt="민감도 분석">
-      <div class="chart-note">
-        녹색 구간(1.5x~4.0x) = 합리적인 범위. 수직 점선 = 현재 설정({report.bias_factor}x).
-        곡선이 가파를수록 이 가정에 비용이 민감합니다.
-      </div>
-    </div>
-    {sens_table}
-    {"" if not has_mc else _plain("<b>Monte Carlo CI</b>가 활성화되어 있습니다. 위 예측 표의 신뢰구간은 Bootstrap CI(표본 추정 오차만 반영)가 아닌 <b>Monte Carlo CI</b>입니다. — bias_factor와 채택률의 불확실성까지 더해 더 넓고 솔직한 범위를 보여줍니다.")}
-    {_toggle("Bootstrap CI vs Monte Carlo CI — 무엇이 다른가요?",
-        "<p><strong>Bootstrap CI</strong>는 '표본 100명에서 P50/P75/P95를 추정할 때 생기는 오차'만 반영합니다. "
-        "즉, bias_factor=2.5가 정확하다고 가정하고 사용자 샘플링 오차만 측정합니다.</p>"
-        "<p><strong>Monte Carlo CI</strong>는 여기에 두 가지 불확실성을 추가합니다:<br>"
-        "① <b>bias_factor</b>: 2.5x가 맞는지 확실하지 않으므로 LogNormal 분포로 모델링 (중앙값 2.5, 90% 범위 ≈ 1.4x~4.5x)<br>"
-        "② <b>채택률</b>: 45%가 맞는지 확실하지 않으므로 Beta 분포로 모델링 (중앙 45%, 범위 10~80%)</p>"
-        "<p>결과적으로 Monte Carlo CI는 Bootstrap CI보다 훨씬 넓습니다. "
-        "이것이 '틀린' 것이 아니라 <strong>더 정직한 불확실성 표현</strong>입니다. "
-        "예산 편성 시에는 이 넓은 범위 전체를 고려하는 것이 안전합니다.</p>")}
-
-    <div class="chart-wrap" style="margin-top:20px">
-      <img src="data:image/png;base64,{c5}" alt="램프업 곡선">
-      <div class="chart-note">
-        점선 = 정상 운영(스테디스테이트) 수준. 회색 배경 = 램프업 구간(1~6월), 파란 배경 = 정상 운영(7~12월).
-      </div>
-    </div>
-    {_plain("전사 도입 첫날부터 3천 명이 한꺼번에 쓰진 않습니다. 교육·온보딩을 거쳐 <b>약 6개월에 걸쳐 점진적으로 정착</b>하는 현실을 반영했습니다. 그래서 1년차 비용은 '월 비용 × 12'보다 작습니다.")}
-    {_toggle("램프업 가중치는 어떻게 정했나요?",
-        "<p>일반적인 엔터프라이즈 소프트웨어 도입은 S자 곡선을 그립니다. 본 모델은 "
-        "<strong>1~2개월 30% → 3~4개월 60% → 5~6개월 80% → 7개월 이후 100%</strong>로 단계적 정착을 가정했습니다.</p>"
-        f"<p>12개월 가중치 합 = <strong>{RAMP_SUM:.2f}</strong>이므로, 1년차 연간 비용 = 월 비용 × {RAMP_SUM:.2f}입니다 "
-        "(정착 후 기준 연간은 월 비용 × 12). 도입 속도가 더 빠르다면 가중치를 올려 재계산할 수 있습니다.</p>")}
-
-    {_impl(f"분포 적합 품질 {'<strong>양호</strong>' if fit.fit_quality == 'good' else '<strong>보통</strong>' if fit.fit_quality == 'marginal' else '<strong>불량</strong>'}로 이론적 신뢰성이 {'확보'if fit.fit_quality == 'good' else '부분적으로 확보'}되었습니다. "
-           "편향 계수 불확실성은 민감도 분석으로 범위를 제시했습니다. 이상의 분석을 종합한 예산 권장안은 다음과 같습니다.")}
-    {_section_link("이상의 3가지 논거를 종합한 최종 예산 권장안을 다음 섹션에서 확인하세요.")}
-  </section>
-
   <!-- ══ 분석 과정 Step-by-Step ════════════════════════════════════ -->
-  <section id="derivation">
-    <h2>분석 과정 전체 — 기초 통계에서 결론까지 (Step by Step)</h2>
-    {_plain("아래는 원자료에서 출발해 최종 예산 결론에 이르는 모든 계산 단계입니다. 각 단계의 <b>녹색 결과값이 다음 단계의 입력</b>으로 이어집니다. 숫자가 어떻게 변해가는지 따라가면 결론의 근거를 직접 검증할 수 있습니다.")}
+  <section id="analysis">
+    <h2>분석 과정 — 원자료에서 예산 결론까지 (Step by Step)</h2>
     {steps_html}
-    {_section_link("이 과정을 거쳐 도출된 최종 예산 권장안은 다음과 같습니다.")}
   </section>
 
   <!-- ══ 결론: 권장 예산 ════════════════════════════════════════════ -->
   <section id="conclusion">
     <h2>결론 — 권장 예산 및 방어 근거</h2>
-    {_plain("앞의 3가지 논거를 종합한 <b>예산 권장안</b>입니다. 단일 숫자가 아닌 <b>범위</b>로 제시하며, 각 범위의 근거와 신뢰 수준을 함께 명시합니다.")}
+    {_plain("위 단계별 분석을 종합한 <b>예산 권장안</b>입니다. 단일 숫자가 아닌 <b>범위</b>로 제시하며, 각 범위의 근거와 신뢰 수준을 함께 명시합니다.")}
     {conclusion_html}
   </section>
 

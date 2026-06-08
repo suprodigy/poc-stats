@@ -1321,3 +1321,152 @@ def generate(report: ForecastReport, path: str):
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"HTML 리포트 저장: {path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# PPT용 1장 요약 슬라이드 (부서별 실사용 Top/Bottom 중심)
+# ─────────────────────────────────────────────────────────────────────────
+
+_SLIDE_CSS = """
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#e9edf2; font-family:'Malgun Gothic','Apple SD Gothic Neo',
+       'Noto Sans KR',sans-serif; }
+.slide { width:1280px; height:720px; background:#fff; margin:0 auto;
+         padding:44px 56px; display:flex; flex-direction:column;
+         color:#2c3e50; overflow:hidden; }
+.s-head { display:flex; justify-content:space-between; align-items:flex-end;
+          border-bottom:3px solid #2c3e50; padding-bottom:14px; }
+.s-title { font-size:32px; font-weight:900; letter-spacing:-1px; }
+.s-ctx { font-size:13px; color:#7f8c8d; text-align:right; line-height:1.5; }
+.s-kpis { display:flex; gap:16px; margin:24px 0 22px; }
+.s-kpi { flex:1; border-radius:12px; padding:16px 18px; }
+.s-kpi .k-lbl { font-size:13px; font-weight:700; opacity:.85; }
+.s-kpi .k-val { font-size:30px; font-weight:900; letter-spacing:-1px;
+                margin-top:6px; }
+.s-kpi .k-sub { font-size:12px; opacity:.7; margin-top:2px; }
+.s-cols { display:flex; gap:34px; flex:1; min-height:0; }
+.s-col { flex:1; display:flex; flex-direction:column; }
+.s-col h3 { font-size:17px; font-weight:800; margin-bottom:14px; }
+.s-row { display:flex; align-items:center; margin-bottom:13px; }
+.s-name { width:118px; font-size:14px; font-weight:700; white-space:nowrap;
+          overflow:hidden; text-overflow:ellipsis; }
+.s-badge { display:inline-block; font-size:10px; font-weight:700; color:#fff;
+           background:#95a5a6; border-radius:9px; padding:1px 6px; margin-left:5px; }
+.s-track { flex:1; background:#eef2f5; border-radius:6px; height:24px;
+           margin:0 10px; position:relative; overflow:hidden; }
+.s-fill { height:100%; border-radius:6px; }
+.s-val { width:78px; text-align:right; font-size:15px; font-weight:800; }
+.s-foot { margin-top:20px; padding-top:12px; border-top:1px solid #e1e5ea;
+          font-size:12px; color:#95a5a6; text-align:center; }
+.s-empty { flex:1; display:flex; align-items:center; justify-content:center;
+           font-size:20px; color:#95a5a6; }
+"""
+
+
+def generate_slide(report: ForecastReport, path: str):
+    """PPT 한 장 분량의 16:9 요약 슬라이드 — 부서별 실사용 Top/Bottom 중심."""
+    rows = report.department_usage
+    rate = report.credit_to_usd
+
+    ctx = (f"POC {report.poc_users}명 · {report.poc_period_days}일 실측<br>"
+           f"1 credit = ${rate:g} · 편향보정 미적용")
+
+    if not rows:
+        body = '<div class="s-empty">부서 정보가 없어 슬라이드를 생성할 수 없습니다.</div>'
+        html = _slide_shell("부서별 AI 크레딧 실사용 현황", ctx, body)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"슬라이드 저장: {path}")
+        return
+
+    company_avg = sum(r.avg_usd_monthly for r in rows) / len(rows)
+    hi, lo = rows[0].avg_usd_monthly, rows[-1].avg_usd_monthly
+    ratio = (hi / lo) if lo > 0 else 0
+    top_dept, bot_dept = rows[0], rows[-1]
+
+    # KPI 카드
+    kpis = f"""
+  <div class="s-kpis">
+    <div class="s-kpi" style="background:#eef2fb">
+      <div class="k-lbl" style="color:#2980b9">전사 평균 실사용액</div>
+      <div class="k-val" style="color:#2980b9">${company_avg:,.1f}</div>
+      <div class="k-sub">$/월·인</div>
+    </div>
+    <div class="s-kpi" style="background:#fdedec">
+      <div class="k-lbl" style="color:#c0392b">최다 사용 부서</div>
+      <div class="k-val" style="color:#c0392b">${top_dept.avg_usd_monthly:,.1f}</div>
+      <div class="k-sub">{top_dept.department}</div>
+    </div>
+    <div class="s-kpi" style="background:#eafaf1">
+      <div class="k-lbl" style="color:#27ae60">최소 사용 부서</div>
+      <div class="k-val" style="color:#27ae60">${bot_dept.avg_usd_monthly:,.1f}</div>
+      <div class="k-sub">{bot_dept.department}</div>
+    </div>
+    <div class="s-kpi" style="background:#fef9e7">
+      <div class="k-lbl" style="color:#f39c12">최대/최소 격차</div>
+      <div class="k-val" style="color:#f39c12">{ratio:.1f}배</div>
+      <div class="k-sub">부서간 사용 편차</div>
+    </div>
+  </div>"""
+
+    n = len(rows)
+    k = min(5, max(1, n // 2))
+    top_rows = rows[:k]
+    bot_rows = rows[-k:]
+
+    def _bar_row(r, color):
+        pct = (r.avg_usd_monthly / hi * 100) if hi > 0 else 0
+        return (
+            f'<div class="s-row">'
+            f'<div class="s-name">{r.department}'
+            f'<span class="s-badge">{r.n_users}명</span></div>'
+            f'<div class="s-track"><div class="s-fill" '
+            f'style="width:{pct:.1f}%;background:{color}"></div></div>'
+            f'<div class="s-val">${r.avg_usd_monthly:,.1f}</div>'
+            f'</div>'
+        )
+
+    top_html = "".join(_bar_row(r, "#e74c3c") for r in top_rows)
+    bot_html = "".join(_bar_row(r, "#2980b9") for r in bot_rows)
+
+    body = f"""{kpis}
+  <div class="s-cols">
+    <div class="s-col">
+      <h3>🔺 상위 사용 부서 (Top {k})</h3>
+      {top_html}
+    </div>
+    <div class="s-col">
+      <h3>🔻 하위 사용 부서 (Bottom {k})</h3>
+      {bot_html}
+    </div>
+  </div>
+  <div class="s-foot">
+    POC 참가자 실측 월 평균 사용량 · 편향계수 미적용(상대 격차는 보정 여부와 무관하게 동일) · 예측·추정값 아님
+  </div>"""
+
+    html = _slide_shell("부서별 AI 크레딧 실사용 현황", ctx, body)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"슬라이드 저장: {path}")
+
+
+def _slide_shell(title: str, ctx_html: str, body_html: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>{_SLIDE_CSS}
+@page {{ size:1280px 720px; margin:0; }}
+</style>
+</head>
+<body>
+<div class="slide">
+  <div class="s-head">
+    <div class="s-title">{title}</div>
+    <div class="s-ctx">{ctx_html}</div>
+  </div>
+  {body_html}
+</div>
+</body>
+</html>"""

@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--output-csv", metavar="PATH")
     parser.add_argument("--output-html", metavar="PATH",
                         help="HTML 리포트 저장 경로 (차트 6개 포함 단일 파일)")
+    parser.add_argument("--output-slide", metavar="PATH",
+                        help="PPT용 1장 요약 슬라이드 HTML 저장 (부서별 실사용 Top/Bottom · 16:9)")
     parser.add_argument("--no-ramp", action="store_true")
     parser.add_argument("--bootstrap-iterations", type=int, default=2000, metavar="N")
     parser.add_argument("--monte-carlo", action="store_true",
@@ -203,6 +205,10 @@ def main():
     if args.output_html:
         from . import html_reporter
         html_reporter.generate(report, args.output_html)
+
+    if args.output_slide:
+        from . import html_reporter
+        html_reporter.generate_slide(report, args.output_slide)
 
 
 if __name__ == "__main__":

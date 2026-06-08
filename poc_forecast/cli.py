@@ -165,6 +165,7 @@ def main():
         usage_type_summary=df.groupby("usage_type")["usage_credit"].sum().to_dict(),
         usage_unit_summary=df.groupby("usage_unit")["usage_credit"].sum().to_dict(),
         segment_stats=segment_stats,
+        department_usage=analysis.compute_department_usage(user_stats, monthly_per_user, args.credit_to_usd),
         scenarios=scenarios,
         sensitivity=sensitivity,
         warnings=warnings,

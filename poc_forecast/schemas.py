@@ -101,6 +101,15 @@ class RoleScenarioResult:
 
 
 @dataclass
+class DepartmentUsage:
+    department: str
+    division: str
+    n_users: int
+    avg_credit_monthly: float   # POC 실측 평균 (credit/월)
+    avg_usd_monthly: float      # USD 환산 (credit_to_usd 적용 · 편향보정 없음)
+
+
+@dataclass
 class TierDef:
     name: str
     monthly_usd: float
@@ -139,6 +148,7 @@ class ForecastReport:
     sensitivity: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     role_scenarios: list = field(default_factory=list)
+    department_usage: list = field(default_factory=list)
     tier_defs: list = field(default_factory=list)
     tier_allocations: list = field(default_factory=list)
     tier_company: Optional[dict] = None

@@ -784,6 +784,78 @@ def _build_conclusion(cons, modr, aggr, usd: float, unit: str,
 </div>"""
 
 
+def _usage_bar(value: float, max_value: float, color: str = "#2980b9", height: int = 16) -> str:
+    """단일 값의 상대 크기를 가로 막대(CSS)로 렌더 — 부서별 실사용액 비교용."""
+    pct = (value / max_value * 100) if max_value > 0 else 0
+    return (
+        f'<div style="background:#eef2f5;border-radius:4px;overflow:hidden;height:{height}px">'
+        f'<div style="width:{pct:.1f}%;background:{color};height:100%"></div></div>'
+    )
+
+
+def _build_department_usage_section(report: ForecastReport) -> str:
+    rows_du = report.department_usage
+    if not rows_du:
+        return ""
+
+    rate = report.credit_to_usd
+    company_avg = sum(r.avg_usd_monthly for r in rows_du) / len(rows_du)
+    lo, hi = rows_du[-1].avg_usd_monthly, rows_du[0].avg_usd_monthly
+    ratio = (hi / lo) if lo > 0 else 0
+    max_usd = hi
+
+    method = _plain(
+        f"POC 참가자 {report.poc_users}명의 부서별 <b>실측 평균 사용량</b>을 "
+        f"USD로 환산한 값입니다 (1 credit = ${rate:g}). "
+        "<b>편향보정을 적용하지 않은 원자료</b>이므로, 부서간 상대적 사용 패턴 차이를 "
+        "가장 직접적으로 보여줍니다 — 아래 '부서별 티어 분배 권장' 섹션은 이 값에 "
+        f"편향 계수 {report.bias_factor}x를 적용한 결과입니다.")
+
+    summary = f"""
+<div style="background:#f8f9fb;border:1px solid #e1e5ea;border-radius:10px;padding:16px;margin:12px 0">
+  <div style="display:flex;gap:14px;text-align:center;flex-wrap:wrap">
+    <div style="flex:1;min-width:120px;background:#eef2fb;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#2980b9;font-weight:700">전사 평균 실사용액</div>
+      <div style="font-size:20px;font-weight:800;color:#2980b9">${company_avg:,.2f}<small style="font-size:11px">/월·인</small></div>
+    </div>
+    <div style="flex:1;min-width:120px;background:#fef9e7;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#f39c12;font-weight:700">범위 (최소 ~ 최대)</div>
+      <div style="font-size:20px;font-weight:800;color:#f39c12">${lo:,.2f} ~ ${hi:,.2f}</div>
+    </div>
+    <div style="flex:1;min-width:120px;background:#fdedec;border-radius:8px;padding:10px">
+      <div style="font-size:11px;color:#c0392b;font-weight:700">최대/최소 격차</div>
+      <div style="font-size:20px;font-weight:800;color:#c0392b">{ratio:.1f}x</div>
+    </div>
+  </div>
+</div>"""
+
+    rows_html = ""
+    for r in rows_du:
+        bar = _usage_bar(r.avg_usd_monthly, max_usd)
+        rows_html += f"""
+<tr>
+  <td style="white-space:nowrap">{r.department}</td>
+  <td style="text-align:center">{r.n_users}</td>
+  <td style="text-align:right">{r.avg_credit_monthly:,.0f}</td>
+  <td style="min-width:160px">{bar}</td>
+  <td style="text-align:right">${r.avg_usd_monthly:,.2f}</td>
+</tr>"""
+    table = f"""
+<table>
+<tr><th>부서</th><th>인원</th>
+    <th style="text-align:right">실측평균<br><small>cr/월</small></th>
+    <th>상대 비교</th>
+    <th style="text-align:right">평균 사용액<br><small>$/월·인 (편향보정 없음)</small></th></tr>
+{rows_html}
+</table>
+<p style="font-size:11px;color:#7f8c8d;margin-top:6px">
+  부서는 평균 사용액 내림차순 정렬. 편향 계수(÷{report.bias_factor}x)는 모든 부서에 동일하게
+  적용되는 상수이므로, 보정 여부와 무관하게 부서간 <b>상대적 격차 비율은 동일</b>합니다.
+</p>"""
+
+    return method + summary + table
+
+
 # 티어 색상: T1 초록 → T4 빨강 (저사용 → 고사용)
 _TIER_COLORS = ["#27ae60", "#f1c40f", "#e67e22", "#e74c3c",
                 "#8e44ad", "#34495e"]
@@ -1135,6 +1207,9 @@ def generate(report: ForecastReport, path: str):
         role_scenarios=report.role_scenarios or None,
     )
 
+    # --- 부서별 평균 실사용액 섹션 (편향보정 미적용) ---
+    dept_usage_section_html = _build_department_usage_section(report)
+
     # --- 부서별 티어 분배 섹션 ---
     tier_section_html = _build_tier_section(report)
 
@@ -1166,6 +1241,13 @@ def generate(report: ForecastReport, path: str):
 <tr><td>전사 인원</td><td>{report.enterprise_users:,}명</td>
     <td>확대 대상 모집단</td></tr>
 </table>"""
+
+    dept_usage_section_block = (f"""
+  <!-- ══ 부서별 평균 실사용액 ══════════════════════════════════════ -->
+  <section id="dept-usage">
+    <h2>부서별 평균 실사용액 (편향보정 미적용)</h2>
+    {dept_usage_section_html}
+  </section>""" if dept_usage_section_html else "")
 
     tier_section_block = (f"""
   <!-- ══ 부서별 티어 분배 권장 ══════════════════════════════════════ -->
@@ -1210,6 +1292,8 @@ def generate(report: ForecastReport, path: str):
     {_plain("위 단계별 분석을 종합한 <b>예산 권장안</b>입니다. 단일 숫자가 아닌 <b>범위</b>로 제시하며, 각 범위의 근거와 신뢰 수준을 함께 명시합니다.")}
     {conclusion_html}
   </section>
+
+  {dept_usage_section_block}
 
   {tier_section_block}
 

@@ -1,6 +1,8 @@
+from collections import defaultdict
+
 import numpy as np
 import pandas as pd
-from .schemas import UserStats, SegmentStats
+from .schemas import UserStats, SegmentStats, DepartmentUsage
 from .distribution import WORKING_DAYS_PER_MONTH
 
 # POC 데이터의 활동일 비율로 근무일 보정 시 사용하는 이론적 근무일 비율 (5/7)
@@ -150,6 +152,34 @@ def compute_monthly_per_user(
     """
     scale = _monthly_scale(poc_days, working_day_ratio)
     return np.array([u.total_credit * scale for u in user_stats])
+
+
+def compute_department_usage(
+    user_stats: list[UserStats], monthly_per_user, credit_to_usd: float
+) -> list[DepartmentUsage]:
+    """
+    부서별 POC 실측 평균 사용량 (편향보정 미적용, credit_to_usd로만 USD 환산).
+
+    티어 분배 모델과 달리 가공 없는 원자료 그대로의 부서간 상대적 사용 격차를 보여준다.
+    사용액 내림차순 정렬.
+    """
+    rate = credit_to_usd if credit_to_usd else 1.0
+    groups = defaultdict(list)
+    for u, m in zip(user_stats, monthly_per_user):
+        groups[u.department or "unknown"].append((m, u.division))
+
+    rows = []
+    for dept, items in groups.items():
+        vals = [v for v, _ in items]
+        n = len(vals)
+        avg_credit = sum(vals) / n
+        rows.append(DepartmentUsage(
+            department=dept, division=items[0][1], n_users=n,
+            avg_credit_monthly=avg_credit, avg_usd_monthly=avg_credit * rate,
+        ))
+
+    rows.sort(key=lambda r: r.avg_usd_monthly, reverse=True)
+    return rows
 
 
 def compute_population_percentiles(monthly_per_user: np.ndarray) -> dict:

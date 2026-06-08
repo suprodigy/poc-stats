@@ -192,12 +192,32 @@ def print_report(report: ForecastReport, verbose: bool = False):
             tablefmt="simple", disable_numparse=True,
         ))
 
-    # ── Section 7: 부서별 티어 분배 권장 ─────────────────
+    # ── Section 7: 부서별 평균 실사용액 (편향보정 미적용) ──
+    if report.department_usage:
+        rows_du = report.department_usage
+        rate = report.credit_to_usd
+        company_avg = sum(r.avg_usd_monthly for r in rows_du) / len(rows_du)
+        lo, hi = rows_du[-1].avg_usd_monthly, rows_du[0].avg_usd_monthly
+        ratio = hi / lo if lo > 0 else 0
+        print("\n[7] 부서별 평균 실사용액 (POC 실측 기준 · 편향보정 미적용)")
+        print("-" * 68)
+        print(f"  1 credit = ${rate:g} 적용 · 전사 평균 ${company_avg:,.2f}/월·인 · "
+              f"범위 ${lo:,.2f}~${hi:,.2f} ({ratio:.1f}x)")
+        print(tabulate(
+            [[r.department, r.n_users, f"{r.avg_credit_monthly:,.0f}", f"${r.avg_usd_monthly:,.2f}"]
+             for r in rows_du],
+            headers=["부서", "인원", "실측평균(cr/월)", "평균사용액($/월·인)"],
+            tablefmt="simple", disable_numparse=True,
+        ))
+        print(f"  * 편향계수(÷{report.bias_factor}x) 미적용 — POC 참가자 실측 그대로의 부서간 "
+              "상대적 사용 격차입니다. 일반직원 수준 추정(편향보정 적용)은 [8] 티어 분배 섹션 참고.")
+
+    # ── Section 8: 부서별 티어 분배 권장 ─────────────────
     if report.tier_allocations and report.tier_company:
         comp = report.tier_company
         tdefs = report.tier_defs
         n_t = len(tdefs)
-        print(f"\n[7] 부서별 티어 분배 권장 (편향보정 ÷{report.bias_factor}x · 평균 사용량 기준)")
+        print(f"\n[8] 부서별 티어 분배 권장 (편향보정 ÷{report.bias_factor}x · 평균 사용량 기준)")
         print("-" * 68)
         cap_str = " / ".join(f"{t.name} ${t.monthly_usd:,.0f}" for t in tdefs)
         cr_rate = report.credit_to_usd

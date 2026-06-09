@@ -1332,40 +1332,42 @@ _SLIDE_CSS = """
 body { background:#e9edf2; font-family:'Malgun Gothic','Apple SD Gothic Neo',
        'Noto Sans KR',sans-serif; }
 .slide { width:1280px; height:720px; background:#fff; margin:0 auto;
-         padding:44px 56px; display:flex; flex-direction:column;
+         padding:36px 56px 28px; display:flex; flex-direction:column;
          color:#2c3e50; overflow:hidden; }
 .s-head { display:flex; justify-content:space-between; align-items:flex-end;
-          border-bottom:3px solid #2c3e50; padding-bottom:14px; }
-.s-title { font-size:32px; font-weight:900; letter-spacing:-1px; }
-.s-ctx { font-size:13px; color:#7f8c8d; text-align:right; line-height:1.5; }
-.s-kpis { display:flex; gap:16px; margin:24px 0 22px; }
-.s-kpi { flex:1; border-radius:12px; padding:16px 18px; }
-.s-kpi .k-lbl { font-size:13px; font-weight:700; opacity:.85; }
-.s-kpi .k-val { font-size:30px; font-weight:900; letter-spacing:-1px;
-                margin-top:6px; }
-.s-kpi .k-sub { font-size:12px; opacity:.7; margin-top:2px; }
-.s-cols { display:flex; gap:34px; flex:1; min-height:0; }
-.s-col { flex:1; display:flex; flex-direction:column; }
-.s-col h3 { font-size:17px; font-weight:800; margin-bottom:14px; }
-.s-row { display:flex; align-items:center; margin-bottom:13px; }
-.s-name { width:118px; font-size:14px; font-weight:700; white-space:nowrap;
+          border-bottom:3px solid #2c3e50; padding-bottom:12px; }
+.s-title { font-size:30px; font-weight:900; letter-spacing:-1px; }
+.s-ctx { font-size:12px; color:#7f8c8d; text-align:right; line-height:1.5; }
+.s-kpis { display:flex; gap:14px; margin:18px 0 16px; }
+.s-kpi { flex:1; border-radius:10px; padding:12px 16px; }
+.s-kpi .k-lbl { font-size:12px; font-weight:700; opacity:.85; }
+.s-kpi .k-val { font-size:26px; font-weight:900; letter-spacing:-1px; margin-top:4px; }
+.s-kpi .k-sub { font-size:11px; opacity:.7; margin-top:2px; }
+.s-rank { flex:1; min-height:0; overflow:hidden; }
+.s-rank h3 { font-size:14px; font-weight:800; color:#7f8c8d;
+             margin-bottom:8px; letter-spacing:.5px; }
+.s-rank-row { display:flex; align-items:center; margin-bottom:7px; }
+.s-name { width:130px; font-size:13px; font-weight:700; white-space:nowrap;
           overflow:hidden; text-overflow:ellipsis; }
 .s-badge { display:inline-block; font-size:10px; font-weight:700; color:#fff;
-           background:#95a5a6; border-radius:9px; padding:1px 6px; margin-left:5px; }
-.s-track { flex:1; background:#eef2f5; border-radius:6px; height:24px;
-           margin:0 10px; position:relative; overflow:hidden; }
-.s-fill { height:100%; border-radius:6px; }
-.s-val { width:78px; text-align:right; font-size:15px; font-weight:800; }
-.s-foot { margin-top:20px; padding-top:12px; border-top:1px solid #e1e5ea;
-          font-size:12px; color:#95a5a6; text-align:center; }
+           background:#95a5a6; border-radius:9px; padding:1px 6px; margin-left:4px; }
+.s-track { flex:1; background:#eef2f5; border-radius:5px; height:22px;
+           margin:0 10px; overflow:hidden; }
+.s-fill { height:100%; border-radius:5px; }
+.s-val { width:72px; text-align:right; font-size:14px; font-weight:800; }
+.s-per { width:80px; text-align:right; font-size:11px; color:#95a5a6; padding-left:6px; }
+.s-rest { display:flex; align-items:center; margin-top:4px; padding-top:4px;
+          border-top:1px dashed #dde; }
+.s-foot { margin-top:14px; padding-top:10px; border-top:1px solid #e1e5ea;
+          font-size:11px; color:#95a5a6; text-align:center; }
 .s-empty { flex:1; display:flex; align-items:center; justify-content:center;
            font-size:20px; color:#95a5a6; }
 """
 
 
 def generate_slide(report: ForecastReport, path: str):
-    """PPT 한 장 분량의 16:9 요약 슬라이드 — 부서별 실사용 Top/Bottom 중심."""
-    rows = report.department_usage
+    """PPT 한 장 분량의 16:9 슬라이드 — 부서별 예산 임팩트(인원 × 1인당 = 총액) 기준."""
+    rows = report.department_usage  # avg_usd_monthly 내림차순 정렬돼 있음
     rate = report.credit_to_usd
 
     ctx = (f"POC {report.poc_users}명 · {report.poc_period_days}일 실측<br>"
@@ -1373,78 +1375,101 @@ def generate_slide(report: ForecastReport, path: str):
 
     if not rows:
         body = '<div class="s-empty">부서 정보가 없어 슬라이드를 생성할 수 없습니다.</div>'
-        html = _slide_shell("부서별 AI 크레딧 실사용 현황", ctx, body)
+        html = _slide_shell("부서별 AI 크레딧 예산 임팩트", ctx, body)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
         print(f"슬라이드 저장: {path}")
         return
 
-    company_avg = sum(r.avg_usd_monthly for r in rows) / len(rows)
-    hi, lo = rows[0].avg_usd_monthly, rows[-1].avg_usd_monthly
-    ratio = (hi / lo) if lo > 0 else 0
-    top_dept, bot_dept = rows[0], rows[-1]
+    # 총액 기준 정렬 (인원 × 1인당)
+    by_total = sorted(rows, key=lambda r: -(r.n_users * r.avg_usd_monthly))
+    total_sum = sum(r.n_users * r.avg_usd_monthly for r in by_total)
+    max_total = by_total[0].n_users * by_total[0].avg_usd_monthly
+    min_total = by_total[-1].n_users * by_total[-1].avg_usd_monthly
+
+    # 핵심 인사이트: 1인당 1위 vs 총액 1위
+    per_top  = rows[0].department       # avg_usd_monthly 1위 (rows는 1인당 내림차순)
+    cost_top = by_total[0].department   # 총액 1위
+    if per_top != cost_top:
+        insight_txt = f"1인당 1위 {per_top} ≠ 총액 1위 {cost_top}"
+        insight_sub = "인원 규모가 예산 순위를 바꿉니다"
+    else:
+        insight_txt = f"1인당 · 총액 모두 1위: {cost_top}"
+        insight_sub = "규모·강도 모두 압도적"
 
     # KPI 카드
     kpis = f"""
   <div class="s-kpis">
     <div class="s-kpi" style="background:#eef2fb">
-      <div class="k-lbl" style="color:#2980b9">전사 평균 실사용액</div>
-      <div class="k-val" style="color:#2980b9">${company_avg:,.1f}</div>
-      <div class="k-sub">$/월·인</div>
+      <div class="k-lbl" style="color:#2980b9">전사 합산 월 비용</div>
+      <div class="k-val" style="color:#2980b9">${total_sum:,.0f}</div>
+      <div class="k-sub">$/월 (전 부서 합산)</div>
     </div>
     <div class="s-kpi" style="background:#fdedec">
-      <div class="k-lbl" style="color:#c0392b">최다 사용 부서</div>
-      <div class="k-val" style="color:#c0392b">${top_dept.avg_usd_monthly:,.1f}</div>
-      <div class="k-sub">{top_dept.department}</div>
+      <div class="k-lbl" style="color:#c0392b">최대 임팩트 부서</div>
+      <div class="k-val" style="color:#c0392b">${max_total:,.0f}</div>
+      <div class="k-sub">{by_total[0].department} ({by_total[0].n_users}명)</div>
     </div>
     <div class="s-kpi" style="background:#eafaf1">
-      <div class="k-lbl" style="color:#27ae60">최소 사용 부서</div>
-      <div class="k-val" style="color:#27ae60">${bot_dept.avg_usd_monthly:,.1f}</div>
-      <div class="k-sub">{bot_dept.department}</div>
+      <div class="k-lbl" style="color:#27ae60">최소 임팩트 부서</div>
+      <div class="k-val" style="color:#27ae60">${min_total:,.0f}</div>
+      <div class="k-sub">{by_total[-1].department} ({by_total[-1].n_users}명)</div>
     </div>
     <div class="s-kpi" style="background:#fef9e7">
-      <div class="k-lbl" style="color:#f39c12">최대/최소 격차</div>
-      <div class="k-val" style="color:#f39c12">{ratio:.1f}배</div>
-      <div class="k-sub">부서간 사용 편차</div>
+      <div class="k-lbl" style="color:#e67e22">★ 핵심 인사이트</div>
+      <div class="k-val" style="color:#e67e22;font-size:16px;line-height:1.3;margin-top:6px">{insight_txt}</div>
+      <div class="k-sub">{insight_sub}</div>
     </div>
   </div>"""
 
-    n = len(rows)
-    k = min(5, max(1, n // 2))
-    top_rows = rows[:k]
-    bot_rows = rows[-k:]
+    # 본문 랭킹 (총액 기준, 최대 10개 + 나머지 요약)
+    k = min(10, len(by_total))
+    shown = by_total[:k]
+    rest  = by_total[k:]
 
-    def _bar_row(r, color):
-        pct = (r.avg_usd_monthly / hi * 100) if hi > 0 else 0
+    def _rank_row(r, rank):
+        total = r.n_users * r.avg_usd_monthly
+        pct = (total / max_total * 100) if max_total > 0 else 0
+        # 1~3위는 강한 빨강, 4~6위 주황, 나머지 파랑
+        color = ("#c0392b" if rank <= 3 else "#e67e22" if rank <= 6 else "#2980b9")
         return (
-            f'<div class="s-row">'
-            f'<div class="s-name">{r.department}'
-            f'<span class="s-badge">{r.n_users}명</span></div>'
+            f'<div class="s-rank-row">'
+            f'<div class="s-name">'
+            f'<span style="color:#bbb;font-size:11px;margin-right:4px">{rank}</span>'
+            f'{r.department}<span class="s-badge">{r.n_users}명</span></div>'
             f'<div class="s-track"><div class="s-fill" '
             f'style="width:{pct:.1f}%;background:{color}"></div></div>'
-            f'<div class="s-val">${r.avg_usd_monthly:,.1f}</div>'
+            f'<div class="s-val">${total:,.0f}</div>'
+            f'<div class="s-per">${r.avg_usd_monthly:,.1f}/인</div>'
             f'</div>'
         )
 
-    top_html = "".join(_bar_row(r, "#e74c3c") for r in top_rows)
-    bot_html = "".join(_bar_row(r, "#2980b9") for r in bot_rows)
+    rank_html = "".join(_rank_row(r, i + 1) for i, r in enumerate(shown))
+
+    rest_html = ""
+    if rest:
+        rest_total = sum(r.n_users * r.avg_usd_monthly for r in rest)
+        rest_html = (
+            f'<div class="s-rest">'
+            f'<div class="s-name" style="color:#95a5a6">기타 {len(rest)}개 부서</div>'
+            f'<div class="s-track"><div class="s-fill" style="width:'
+            f'{rest_total/max_total*100:.1f}%;background:#bdc3c7"></div></div>'
+            f'<div class="s-val" style="color:#95a5a6">${rest_total:,.0f}</div>'
+            f'<div class="s-per" style="color:#bbb">합산</div>'
+            f'</div>'
+        )
 
     body = f"""{kpis}
-  <div class="s-cols">
-    <div class="s-col">
-      <h3>🔺 상위 사용 부서 (Top {k})</h3>
-      {top_html}
-    </div>
-    <div class="s-col">
-      <h3>🔻 하위 사용 부서 (Bottom {k})</h3>
-      {bot_html}
-    </div>
+  <div class="s-rank">
+    <h3>부서별 월 비용 랭킹 (총액 = 인원 × 1인당 사용액 기준)</h3>
+    {rank_html}{rest_html}
   </div>
   <div class="s-foot">
-    POC 참가자 실측 월 평균 사용량 · 편향계수 미적용(상대 격차는 보정 여부와 무관하게 동일) · 예측·추정값 아님
+    총액 = POC 실측 1인당 평균 × 인원수 · 편향보정 미적용 · 예측·추정값 아님
+    &nbsp;|&nbsp; 1인당 내림차순과 총액 내림차순은 다릅니다 — 우측 $/인 참고
   </div>"""
 
-    html = _slide_shell("부서별 AI 크레딧 실사용 현황", ctx, body)
+    html = _slide_shell("부서별 AI 크레딧 예산 임팩트", ctx, body)
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"슬라이드 저장: {path}")
